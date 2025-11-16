@@ -4,7 +4,6 @@
 * On November 15, 2025
 *
 * MODIFIED FOR DUMMY DATA / SIMULATION
-* (Original logic is preserved)
 */
 
 // Libraries
@@ -55,7 +54,7 @@ void obdTask(void *pvParameters) {
     // if (ELM_PORT.connected()) { // Replaced with if(true) for simulation
     if (true) {
 
-      // --- DUMMY DATA GENERATION ---
+      // DUMMY DATA GENERATION
       // This block replaces the real myELM327 calls
       float_t local_kph;
       float_t local_maf;
@@ -80,7 +79,7 @@ void obdTask(void *pvParameters) {
       }
       // Cycle to the next state
       dummyState = (dummyState + 1) % 4;
-      // --- END DUMMY DATA ---
+      // END DUMMY DATA
 
 
       // Poll Primary PIDs
@@ -89,7 +88,7 @@ void obdTask(void *pvParameters) {
       uint32_t pollCompleteTime = millis();
 
       //
-      // --- ALL YOUR ORIGINAL LOGIC IS UNCHANGED FROM HERE ---
+      // ALL YOUR ORIGINAL LOGIC IS UNCHANGED FROM HERE
       //
 
       // Check Data Validity
@@ -210,7 +209,7 @@ void setup() {
 
 void loop() {
   //
-  // --- YOUR ORIGINAL loop() IS 100% UNCHANGED ---
+  // YOUR ORIGINAL loop() IS 100% UNCHANGED
   //
 
   // Read Shared Data (Atomic)
