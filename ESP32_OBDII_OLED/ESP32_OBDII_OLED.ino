@@ -30,7 +30,8 @@
 #define I2C_SCL 22
 
 // OBDII Dongle Mac Address
-uint8_t address[6] = { 0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33 };
+uint8_t address[6] = {0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33};
+#define dongleName "OBDBLE"
 
 // Instances
 BluetoothSerial SerialBT;
@@ -106,7 +107,18 @@ void obdTask(void *pvParameters) {
         xSemaphoreGive(dataMutex);
       }
 
-      myELM327.begin(ELM_PORT, true, 2000);
+      if (!ELM_PORT.connect(address)) {
+        DEBUG_PORT.println("CONNECTION ERROR & =++ DURING RUNTIME ++= & ->> PHASE #1 (MAC)");
+        if (!ELM_PORT.connect(dongleName)) {
+          DEBUG_PORT.println("CONNECTION ERROR & =++ DURING RUNTIME ++= & ->> PHASE #1 (NAME)");
+        }
+      }
+
+      if (ELM_PORT.connected()) {
+        DEBUG_PORT.println("Bluetooth Reconnected! Initializing ELM...");
+        myELM327.begin(ELM_PORT, true, 2000);
+      }
+
       lastSuccessfulMpgPollTime = 0;
       vTaskDelay(pdMS_TO_TICKS(3000));  // Wait 3s before retry
     }
@@ -128,21 +140,26 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("ESP32 OBD-II Reader");
-  display.println("Dual Core (MAC)");
+  display.println("ESP32 OBD-II OLED Reader");
+  display.println("Dual Core FreeRTOS");
   display.println("-----------------");
   display.println("Connecting via MAC...");
   display.display();
 
   // Connect to ELM327 via MAC Address
-  ELM_PORT.begin("ESP32_OBD_OLED", true);
+  ELM_PORT.begin("OBDII OLED", true);
 
   if (!ELM_PORT.connect(address)) {
-    DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1");
-    display.println("\nBT Connect Failed!");
+    DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1 (MAC)");
+    display.println("\nBT Connect Failed! (With MAC)");
     display.display();
-    delay(2000);
-    ESP.restart();
+    if (!ELM_PORT.connect(dongleName)) {
+      DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1 (NAME)");
+      display.println("\nBT Connect Failed! (With NAME)");
+      display.display();
+      delay(2000);
+      ESP.restart();
+   }
   }
 
   if (!myELM327.begin(ELM_PORT, true, 2000)) {
