@@ -142,7 +142,7 @@ void setup() {
   display.setCursor(0, 0);
   display.println("ESP32 OBD-II OLED Reader");
   display.println("Dual Core FreeRTOS");
-  display.println("-----------------");
+  display.println("------------------------");
   display.println("Connecting via MAC...");
   display.display();
 
@@ -166,14 +166,13 @@ void setup() {
     DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #2");
     display.println("\nELM Init Failed!");
     display.display();
-    delay(2000);
     ESP.restart();
   }
 
   DEBUG_PORT.println("CONNECTED TO ELM327!");
   display.println("\nCONNECTED!");
   display.display();
-  delay(200);
+  delay(50);
 
   // Create the Mutex and Core 0 Task
   dataMutex = xSemaphoreCreateMutex();
@@ -199,7 +198,7 @@ void loop() {
     local_lastUpdate = global_lastDataUpdate;
     xSemaphoreGive(dataMutex);
   } else {
-    return;  // Skip this frame
+    return; // Skip this frame
   }
 
   // Perform Display Calculations
