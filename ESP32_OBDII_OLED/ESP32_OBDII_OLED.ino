@@ -2,7 +2,7 @@
 * ESP32_OBDII_OLED.ino
 * Created by Olme-xD
 * On November 15, 2025
-*test
+*
 * FEATURES:
   * Dual-Core (FreeRTOS): Core 0 polls OBD, Core 1 updates the display.
   * Connects via Bluetooth MAC address (ELM327).
