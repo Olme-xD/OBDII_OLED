@@ -58,7 +58,7 @@ volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
 volatile uint32_t global_lastPressed = millis();
 volatile int global_mode = 1;
-typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, ODB_STATE_RPM, ODB_STATE_LOAD, ODB_STATE_FUEL} ObdState;
+typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL} ObdState;
 
 void obdTask(void *pvParameters) {
   DEBUG_PORT.println("OBD Task started on Core 0");
@@ -133,7 +133,7 @@ void obdTask(void *pvParameters) {
           }
           break;
         }
-        case ODB_STATE_RPM: {
+        case OBD_STATE_RPM: {
           float_t value = myELM327.rpm();
 
           if(myELM327.nb_rx_state == ELM_SUCCESS) {
@@ -150,7 +150,7 @@ void obdTask(void *pvParameters) {
           }
           break;
         }
-        case ODB_STATE_LOAD: {
+        case OBD_STATE_LOAD: {
           float_t value = myELM327.engineLoad();
 
           if(myELM327.nb_rx_state == ELM_SUCCESS) {
@@ -167,7 +167,7 @@ void obdTask(void *pvParameters) {
           }
           break;
         }
-        case ODB_STATE_FUEL: {
+        case OBD_STATE_FUEL: {
           float_t value = myELM327.fuelLevel();
 
           if(myELM327.nb_rx_state == ELM_SUCCESS) {
