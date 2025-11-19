@@ -184,7 +184,6 @@ void obdTask(void *pvParameters) {
           }
           break;
         }
-        default: currentState = OBD_STATE_KPH;
       }
     } else {
       // Handle Reconnection
@@ -269,8 +268,28 @@ void loop() {
   // Local Variables
   float_t local_kph, local_maf;
   double local_totalDist, local_totalFuel;
-  uint32_t local_lastUpdate, local_lastPressed;
-  int local_mode;
+  uint32_t local_lastUpdate;
+  static uint32_t local_lastPressed = 0;
+  static bool buttonActive = false;
+  static int local_mode = 1;
+
+  // Switch Reading State
+  if (digitalRead(SWITCH) == HIGH) {
+    if (!buttonActive) {
+      buttonActive = true;
+      local_lastPressed = millis(); // Reset Timer
+    }
+    if ((millis() - local_lastPressed) > 1000) {
+      local_lastPressed = millis();
+      if (local_mode >= 5) {
+        local_mode = 1;
+      } else {
+        local_mode++;
+      }
+    }
+  } else {
+    buttonActive = false;
+  }
   
   // Read & Retrive Data to Global Variables
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -286,17 +305,9 @@ void loop() {
     return;
   }
 
-  // Switch Reading State
-  if (digitalRead(SWITCH) == HIGH) {
-    if (millis() > (local_lastPressed + 1000)) {
-      local_lastPressed = millis();
-      if (local_mode >= 5) {
-        local_mode = 1;
-      } else {
-        local_mode++;
-      }
-    }
-  }
+  // Clear Display
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
 
   // Mode Switching
   switch(local_mode) {
@@ -308,7 +319,7 @@ void loop() {
 
       if (isInstantMpgValid) {
         inst_mpg = round((14.7 * 6.17 * 4.54 * local_kph * 0.621371) / (3600 * local_maf / 100));
-        if (inst_mpg > 90.0) inst_mpg = 90.0;
+        if (inst_mpg > 99.0) inst_mpg = 99.0;
       }
 
       float_t avg_mpg = 0.0;
@@ -318,10 +329,6 @@ void loop() {
         double avg_lp100k = (local_totalFuel / local_totalDist) * 100.0;
         avg_mpg = 235.21 / avg_lp100k;
       }
-
-      // Clear display and show data
-      display.clearDisplay();
-      display.setTextColor(SSD1306_WHITE);
 
       // Instant MPG
       display.setFont(&FreeSansBold40pt7b);
@@ -347,16 +354,13 @@ void loop() {
       display.setFont(NULL);
       display.setTextSize(1);
       display.setCursor(118, 55);
-      if (millis() - local_lastUpdate < 2000) {
+      if (millis() - local_lastUpdate < 500) {
         display.print("*");
       } else if(!ELM_PORT.connected()) {
         display.print("!");
       } else {
         display.print("?");
       }
-
-      display.display();
-      delay(100);
       break;
     }
     case 2: {
@@ -371,6 +375,9 @@ void loop() {
     case 5: {
       break;
     }
-    default: local_mode = 1;
   }
+
+  // Display for Every Mode
+  display.display();
+  delay(100);
 }
