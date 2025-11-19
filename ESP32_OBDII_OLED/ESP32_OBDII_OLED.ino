@@ -2,17 +2,20 @@
 * ESP32_OBDII_OLED.ino
 * Created by Olme-xD
 * On November 15, 2025
+* 
+* WARNING:
+  * Use ESP32 Board Version 2.0.14
 *
 * FEATURES:
-  * Dual-Core (FreeRTOS): Core 0 polls OBD, Core 1 updates the display.
-  * Connects via Bluetooth MAC address (ELM327).
+  * Dual-Core (FreeRTOS): Core 0 polls OBD (State Machine), Core 1 updates display.
+  * Connects via Bluetooth MAC address (ELM327) ONLY.
   * Uses MAF & KPH sensor for MPG calculations.
-  * Calculates true average MPG (total distance / total fuel).
-  * Displays "--" on data timeout.
-  * Uses 0.96" 128x64 I2C OLED (SSD1306).
+  * Calculates true average MPG.
+  * Uses State Machine for stable data retrieval.
 */
 
 // Libraries
+#include <math.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -31,7 +34,6 @@
 
 // OBDII Dongle Mac Address
 uint8_t address[6] = {0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33};
-#define dongleName "OBDBLE"
 
 // Instances
 BluetoothSerial SerialBT;
@@ -48,80 +50,106 @@ volatile float_t global_maf = -1.0;
 volatile double global_totalDistanceTraveled = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
+volatile bool global_obdConnected = false;
+typedef enum {OBD_STATE_KPH, OBD_STATE_MAF} ObdState;
+typedef enum {mode1, mode2} OperationMode;
 
 void obdTask(void *pvParameters) {
   DEBUG_PORT.println("OBD Task started on Core 0");
 
   static uint32_t lastSuccessfulMpgPollTime = 0;
+  static ObdState currentState = OBD_STATE_KPH;
+  static float_t temp_kph = 0.0;  // Store speed between states
 
   for (;;) {
     if (ELM_PORT.connected()) {
-      // Poll Primary PIDs
-      float_t local_kph = myELM327.kph();
-      float_t local_maf = myELM327.mafRate();
-      uint32_t pollCompleteTime = millis();
+      global_obdConnected = true;
 
-      // Check Data Validity
-      bool isVssValid = (local_kph > -1);
-      bool isMafValid = (local_maf > -1);
-      bool isAnyDataValid = (isVssValid || isMafValid);
-      bool isMpgDataValid = (isVssValid && isMafValid && local_kph > 0);
+      switch (currentState) {
+        case OBD_STATE_KPH:
+          {
+            float_t value = myELM327.kph();
 
-      double distance_delta_km = 0.0;
-      double fuel_delta = 0.0;
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              temp_kph = value;
 
-      // The code for FUEL was provided by AI, not sure if it actually works.
-      // Calculate Deltas (if valid)
-      if (isMpgDataValid) {
-        // Fuel Rate (L/hr) = (local_maf * 3600) / (14.7 * 740) = local_maf * 0.3309
-        float_t local_fuelRate_lph = local_maf * 0.33094;
+              // Update global KPH
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_vss_kph = temp_kph;
+                global_lastDataUpdate = millis(); // Update timestamp here so the "*" stays alive even if MAF fails
+                xSemaphoreGive(dataMutex);
+              }
 
-        if (lastSuccessfulMpgPollTime > 0) {
-          double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
-          distance_delta_km = local_kph * deltaTime_hours;
-          fuel_delta = local_fuelRate_lph * deltaTime_hours;
-        }
-        lastSuccessfulMpgPollTime = pollCompleteTime;
+              currentState = OBD_STATE_MAF;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+            }
+            break;
+          }
+
+        case OBD_STATE_MAF:
+          {
+            float_t value = myELM327.mafRate();
+
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              float_t temp_maf = value;
+              uint32_t pollCompleteTime = millis();
+              double distance_delta_km = 0.0;
+              double fuel_delta_l = 0.0;
+
+              // Fuel Rate (L/hr) = MAF * 0.3309
+              float_t local_fuelRate_lph = temp_maf * 0.33094;
+
+              if (lastSuccessfulMpgPollTime > 0) {
+                double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
+                fuel_delta_l = local_fuelRate_lph * deltaTime_hours;
+
+                if (temp_kph > 0) {
+                  distance_delta_km = temp_kph * deltaTime_hours;
+                }
+              }w
+              lastSuccessfulMpgPollTime = pollCompleteTime;
+
+              // SAVE TO GLOBALS
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_maf = temp_maf;
+                global_totalDistanceTraveled += distance_delta_km;
+                global_totalFuelConsumed += fuel_delta_l;
+                global_lastDataUpdate = millis();
+                xSemaphoreGive(dataMutex);
+              }
+
+              currentState = OBD_STATE_KPH;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+              currentState = OBD_STATE_KPH;
+            }
+            break;
+          }
       }
-
-      // Update Global Variables (Critical Section)
-      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        global_vss_kph = isVssValid ? local_kph : -1;
-        global_maf = isMafValid ? local_maf : -1;
-
-        if (isAnyDataValid) {
-          global_lastDataUpdate = pollCompleteTime;
-        }
-
-        global_totalDistanceTraveled += distance_delta_km;
-        global_totalFuelConsumed += fuel_delta;
-
-        xSemaphoreGive(dataMutex);
-      }
-
     } else {
       // Handle Reconnection
+      global_obdConnected = false;
       DEBUG_PORT.println("OBD Task: Connection lost, trying to reconnect...");
       if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        global_vss_kph = global_maf = -1.0;
+        global_vss_kph = -1.0;
         xSemaphoreGive(dataMutex);
       }
 
       if (!ELM_PORT.connect(address)) {
-        DEBUG_PORT.println("CONNECTION ERROR & =++ DURING RUNTIME ++= & ->> PHASE #1 (MAC)");
-        if (!ELM_PORT.connect(dongleName)) {
-          DEBUG_PORT.println("CONNECTION ERROR & =++ DURING RUNTIME ++= & ->> PHASE #1 (NAME)");
-        }
+        DEBUG_PORT.println("MAC Reconnection Failed.");
       }
 
       if (ELM_PORT.connected()) {
-        DEBUG_PORT.println("Bluetooth Reconnected! Initializing ELM...");
+        DEBUG_PORT.println("Reconnected! Initializing ELM...");
         myELM327.begin(ELM_PORT, true, 2000);
       }
 
       lastSuccessfulMpgPollTime = 0;
-      vTaskDelay(pdMS_TO_TICKS(3000));  // Wait 3s before retry
+      vTaskDelay(pdMS_TO_TICKS(2000));
     }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -135,49 +163,43 @@ void setup() {
     ESP.restart();
   }
 
-  // Show Startup Message on OLED
+  // Show Startup Message
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("ESP32 OBD-II OLED Reader");
-  display.println("Dual Core FreeRTOS");
-  display.println("------------------------");
+  display.println("OBD-II Reader\n");
+  display.println("Dual Core (FreeRTOS)");
+  display.println("---------------------");
   display.println("Connecting via MAC...");
   display.display();
 
-  // Connect to ELM327 via MAC Address
+  // Connect to ELM327
   ELM_PORT.begin("OBDII OLED", true);
 
+  // Try to connect via MAC ONLY
   if (!ELM_PORT.connect(address)) {
-    DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1 (MAC)");
-    display.println("\nBT Connect Failed! (With MAC)");
+    DEBUG_PORT.println("Connection Failed (MAC)");
+    display.println("\nConnection Failed!");
     display.display();
-    if (!ELM_PORT.connect(dongleName)) {
-      DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1 (NAME)");
-      display.println("\nBT Connect Failed! (With NAME)");
-      display.display();
-      delay(2000);
-      ESP.restart();
-   }
+    delay(2000);
+    ESP.restart();
   }
 
   if (!myELM327.begin(ELM_PORT, true, 2000)) {
-    DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #2");
+    DEBUG_PORT.println("ELM Init Failed");
     display.println("\nELM Init Failed!");
     display.display();
     ESP.restart();
   }
 
-  DEBUG_PORT.println("CONNECTED TO ELM327!");
+  DEBUG_PORT.println("CONNECTED!");
   display.println("\nCONNECTED!");
   display.display();
-  delay(50);
+  delay(500);
 
-  // Create the Mutex and Core 0 Task
   dataMutex = xSemaphoreCreateMutex();
   if (dataMutex == NULL) {
-    DEBUG_PORT.println("Mutex creation failed!");
     ESP.restart();
   }
 
@@ -185,7 +207,14 @@ void setup() {
 }
 
 void loop() {
-  // Read Shared Data (Atomic)
+  switch (OperationMode)
+  {
+  case mode1:
+    /* code */
+    break;
+  
+  default:
+  // Read Shared Data
   float_t local_kph, local_maf;
   double local_totalDist, local_totalFuel;
   uint32_t local_lastUpdate;
@@ -198,10 +227,10 @@ void loop() {
     local_lastUpdate = global_lastDataUpdate;
     xSemaphoreGive(dataMutex);
   } else {
-    return; // Skip this frame
+    return;
   }
 
-  // Perform Display Calculations
+  // MPG & MPH calculations
   float_t local_mph = local_kph * 0.621371;
   float_t inst_mpg = 0.0;
   bool isInstantMpgValid = (local_kph > 0 && local_maf > 0);
@@ -211,27 +240,25 @@ void loop() {
     if (inst_mpg > 90.0) inst_mpg = 90.0;
   }
 
-  // The code for AVERAGE MPG was provided by AI, not sure if it actually works.
-  // Average MPG Calculation (True Avg) ... TRULY ACCURATE IF FUEL IS ACCURATE
   float_t avg_mpg = 0.0;
-  bool isAverageMpgValid = (local_totalDist > 0 && local_totalFuel > 0);
+  bool isAverageMpgValid = (local_totalDist > 0.1 && local_totalFuel > 0.001);
 
   if (isAverageMpgValid) {
     double avg_lp100k = (local_totalFuel / local_totalDist) * 100.0;
     avg_mpg = 235.21 / avg_lp100k;
   }
 
-  // Update the OLED Display
+  // Clear display and show data
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  // Instant MPG (Large)
+  // Instant MPG
   display.setFont(&FreeSansBold40pt7b);
   display.setCursor(0, 60);
   if (isInstantMpgValid) {
     display.print(round(inst_mpg), 0);
-  } else if (local_kph == 0) {
-    display.print("--");
+  } else if (local_kph == 0 && local_maf > 0) {
+    display.print("00"); // If Speed is 0 but MAF is valid, we are idling. Show "0".
   } else {
     display.print("--");
   }
@@ -249,14 +276,212 @@ void loop() {
   display.setFont(NULL);
   display.setTextSize(1);
   display.setCursor(118, 55);
-  if (millis() - local_lastUpdate < 500) {
-    display.print("*");  // "Live"
+  if (millis() - local_lastUpdate < 2000) {
+    display.print("*");
+  } else if(!global_obdConnected) {
+    display.print("!");
   } else {
-    display.print("?");  // "Stale"
+    display.print("?");
   }
 
   display.display();
+  delay(100);
+    break;
+  }
+}
 
-  // Control screen refresh rate
-  delay(100);  // ~10 times/sec
+void mode1(void *pvParameters) {
+  DEBUG_PORT.println("OBD Task started MODE_1 on Core 0");
+
+  static uint32_t lastSuccessfulMpgPollTime = 0;
+  static ObdState currentState = OBD_STATE_KPH;
+  static float_t temp_kph = 0.0;  // Store speed between states
+
+  for (;;) {
+    if (ELM_PORT.connected()) {
+      global_obdConnected = true;
+
+      switch (currentState) {
+        case OBD_STATE_KPH:
+          {
+            float_t value = myELM327.kph();
+
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              temp_kph = value;
+
+              // Update global KPH
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_vss_kph = temp_kph;
+                global_lastDataUpdate = millis(); // Update timestamp here so the "*" stays alive even if MAF fails
+                xSemaphoreGive(dataMutex);
+              }
+
+              currentState = OBD_STATE_MAF;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+            }
+            break;
+          }
+
+        case OBD_STATE_MAF:
+          {
+            float_t value = myELM327.mafRate();
+
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              float_t temp_maf = value;
+              uint32_t pollCompleteTime = millis();
+              double distance_delta_km = 0.0;
+              double fuel_delta_l = 0.0;
+
+              // Fuel Rate (L/hr) = MAF * 0.3309
+              float_t local_fuelRate_lph = temp_maf * 0.33094;
+
+              if (lastSuccessfulMpgPollTime > 0) {
+                double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
+                fuel_delta_l = local_fuelRate_lph * deltaTime_hours;
+
+                if (temp_kph > 0) {
+                  distance_delta_km = temp_kph * deltaTime_hours;
+                }
+              }w
+              lastSuccessfulMpgPollTime = pollCompleteTime;
+
+              // SAVE TO GLOBALS
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_maf = temp_maf;
+                global_totalDistanceTraveled += distance_delta_km;
+                global_totalFuelConsumed += fuel_delta_l;
+                global_lastDataUpdate = millis();
+                xSemaphoreGive(dataMutex);
+              }
+
+              currentState = OBD_STATE_KPH;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+              currentState = OBD_STATE_KPH;
+            }
+            break;
+          }
+      }
+    } else {
+      // Handle Reconnection
+      global_obdConnected = false;
+      DEBUG_PORT.println("OBD Task: Connection lost, trying to reconnect...");
+      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        global_vss_kph = -1.0;
+        xSemaphoreGive(dataMutex);
+      }
+
+      if (!ELM_PORT.connect(address)) {
+        DEBUG_PORT.println("MAC Reconnection Failed.");
+      }
+
+      if (ELM_PORT.connected()) {
+        DEBUG_PORT.println("Reconnected! Initializing ELM...");
+        myELM327.begin(ELM_PORT, true, 2000);
+      }
+
+      lastSuccessfulMpgPollTime = 0;
+      vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+void mode2(void *pvParameters) {
+  DEBUG_PORT.println("OBD Task started MODE_2 on Core 0");
+
+  static ObdState currentState = OBD_STATE_KPH;
+
+  for (;;) {
+    if (ELM_PORT.connected()) {
+      global_obdConnected = true;
+
+      switch (currentState) {
+        case OBD_STATE_KPH:
+          {
+            float_t value = myELM327.kph();
+
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              temp_kph = value;
+
+              // Update global KPH
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_vss_kph = temp_kph;
+                global_lastDataUpdate = millis(); // Update timestamp here so the "*" stays alive even if MAF fails
+                xSemaphoreGive(dataMutex);
+              }
+
+              currentState = OBD_STATE_MAF;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+            }
+            break;
+          }
+
+        case OBD_STATE_MAF:
+          {
+            float_t value = myELM327.mafRate();
+
+            if (myELM327.nb_rx_state == ELM_SUCCESS) {
+              float_t temp_maf = value;
+              uint32_t pollCompleteTime = millis();
+              double distance_delta_km = 0.0;
+              double fuel_delta_l = 0.0;
+
+              // Fuel Rate (L/hr) = MAF * 0.3309
+              float_t local_fuelRate_lph = temp_maf * 0.33094;
+
+              if (lastSuccessfulMpgPollTime > 0) {
+                double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
+                fuel_delta_l = local_fuelRate_lph * deltaTime_hours;
+
+                if (temp_kph > 0) {
+                  distance_delta_km = temp_kph * deltaTime_hours;
+                }
+              }w
+              lastSuccessfulMpgPollTime = pollCompleteTime;
+
+              // SAVE TO GLOBALS
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                global_maf = temp_maf;
+                global_totalDistanceTraveled += distance_delta_km;
+                global_totalFuelConsumed += fuel_delta_l;
+                global_lastDataUpdate = millis();
+                xSemaphoreGive(dataMutex);
+              }
+
+              currentState = OBD_STATE_KPH;
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+              currentState = OBD_STATE_KPH;
+            }
+            break;
+          }
+      }
+    } else {
+      // Handle Reconnection
+      global_obdConnected = false;
+      DEBUG_PORT.println("OBD Task: Connection lost, trying to reconnect...");
+      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        global_vss_kph = -1.0;
+        xSemaphoreGive(dataMutex);
+      }
+
+      if (!ELM_PORT.connect(address)) {
+        DEBUG_PORT.println("MAC Reconnection Failed.");
+      }
+
+      if (ELM_PORT.connected()) {
+        DEBUG_PORT.println("Reconnected! Initializing ELM...");
+        myELM327.begin(ELM_PORT, true, 2000);
+      }
+
+      lastSuccessfulMpgPollTime = 0;
+      vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
 }
