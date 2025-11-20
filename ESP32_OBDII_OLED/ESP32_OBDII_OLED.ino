@@ -5,6 +5,7 @@
 * 
 * WARNING:
   * Use ESP32 Board Version 2.0.14
+  * Use ELMDuino Library Version 3.3.0
 *
 * FEATURES:
   * Dual-Core (FreeRTOS): Core 0 polls OBD (State Machine), Core 1 updates display.
@@ -57,9 +58,8 @@ volatile double global_totalDistanceTraveled = 0.0;
 volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
-volatile uint32_t global_lastPressed = 0;
 volatile int global_mode = 1;
-typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL} ObdState;
+typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL, OBD_STATE_DTC} ObdState;
 
 void obdTask(void *pvParameters) {
   DEBUG_PORT.println("OBD Task started on Core 0");
@@ -84,7 +84,7 @@ void obdTask(void *pvParameters) {
             double dist_delta = 0.0;
             uint32_t time_delta_ms = 0;
 
-            // Only calculate if we have a previous timestamp (not the first loop)
+            // Calculate if NOT the First Loop
             if (lastSpeedTime > 0) {
               time_delta_ms = now - lastSpeedTime;
               double time_hours = time_delta_ms / 3600000.0;
@@ -150,8 +150,10 @@ void obdTask(void *pvParameters) {
             }
 
             // Selective Polling Logic
-            if (local_mode == 3) {
+            if (local_mode == 4) {
               currentState = OBD_STATE_RPM;
+            } else if (local_mode == 6) {
+              currentState = OBD_STATE_DTC;
             } else {
               currentState = OBD_STATE_KPH;
             }
@@ -216,6 +218,9 @@ void obdTask(void *pvParameters) {
             myELM327.printError();
             currentState = OBD_STATE_KPH;
           }
+          break;
+        }
+        case OBD_STATE_DTC: {
           break;
         }
       }
@@ -338,7 +343,7 @@ void loop() {
   uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
   static uint32_t local_lastPressed = 0;
   static bool buttonActive = false;
-  static int local_mode = 5;
+  static int local_mode = 3;
 
   // Switch Reading State
   if (digitalRead(SWITCH) == HIGH) {
@@ -348,7 +353,7 @@ void loop() {
     }
     if ((millis() - local_lastPressed) > 1000) {
       local_lastPressed = millis();
-      if (local_mode >= 5) {
+      if (local_mode >= 6) {
         local_mode = 1;
       } else {
         local_mode++;
@@ -366,7 +371,6 @@ void loop() {
     local_totalDistanceTraveledTimer = global_totalDistanceTraveledTimer;
     local_totalFuel = global_totalFuelConsumed;
     local_lastUpdate = global_lastDataUpdate;
-    global_lastPressed = local_lastPressed;
     global_mode = local_mode;
     xSemaphoreGive(dataMutex);
   } else {
@@ -422,12 +426,12 @@ void loop() {
       display.setFont(NULL);
       display.setTextSize(1);
       display.setCursor(118, 55);
-      if (millis() - local_lastUpdate < 500) {
-        display.print("*");
+      if (millis() - local_lastUpdate < 200) {
+        display.print("o");
       } else if(!ELM_PORT.connected()) {
-        display.print("!");
+        display.print("x");
       } else {
-        display.print("?");
+        display.print("!");
       }
       break;
     }
@@ -452,49 +456,79 @@ void loop() {
       break;
     }
     case 3: {
-      break;
-    }
-    case 4: {
-      break;
-    }
-    case 5: {
-      // --- DEBUG TRIP COMPUTERS ---
-      display.clearDisplay();
-      display.setTextColor(SSD1306_WHITE);
-      display.setFont(NULL); // Use default font for text
+      display.setFont(NULL);
       display.setTextSize(1);
 
-      // 1. Show Total Distance (The "Odometer")
-      display.setCursor(0, 0);
+      // Show Total Distance
+      display.setCursor(0, 10);
       display.print("Dist: ");
-      // Convert km to miles for easier verification
       display.print(local_totalDistanceTraveled * 0.621371, 2); 
       display.print(" mi");
 
-      // 2. Show Total Fuel (The "Gas Tank")
-      display.setCursor(0, 15);
+      // Show Total Fuel
+      display.setCursor(0, 23);
       display.print("Fuel: ");
-      // Convert Liters to Gallons
       display.print(local_totalFuel * 0.264172, 3); 
       display.print(" gal");
 
-      // 3. Show the Calculated Average (The Result)
-      display.setCursor(0, 30);
+      // Calculated MPG Average
+      display.setCursor(0, 43);
       display.print("Calc Avg: ");
       if (local_totalDistanceTraveled > 0.1) {
-         double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
-         display.print(235.21 / lp100k, 1);
+        double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
+        display.print(235.21 / lp100k, 1);
       } else {
-         display.print("--");
+        display.print("--");
       }
 
-      // 4. Show Raw Sensor Data (To check Idle)
-      display.setCursor(0, 45);
+      // Show Raw Sensor Data
+      display.setCursor(0, 58);
       display.print("MAF: "); display.print(local_maf, 1);
       display.print(" g/s");
+      break;
+    }
+    case 4: {
+      float_t local_rpm = 0.0;
+      float_t local_fuelGauge = 0.0;
+      float_t local_engineLoad = 0.0;
       
-      display.display();
-      delay(100);
+      // Read & Retrive Data to Global Variables
+      if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        local_rpm = global_rpm;
+        local_fuelGauge = global_fuel;
+        local_engineLoad = global_load;
+        xSemaphoreGive(dataMutex);
+      } else {
+        return;
+      }
+
+      display.setFont(NULL);
+      display.setTextSize(2);
+
+      // Display RPM
+      display.setCursor(0, 10);
+      display.print("RPM: ");
+      display.println(local_rpm, 0);
+
+      // Display Engine Load
+      display.setCursor(0, 28);
+      display.print("LOAD: ");
+      display.print(local_engineLoad, 0);
+      display.println("%");
+
+      // Display Fuel Level
+      display.setCursor(0, 43);
+      display.print("FUEL: ");
+      display.print(local_fuelGauge, 2);
+      display.println("%");
+      break;
+    }
+    case 5: {
+      // IMPLEMENTATION FOR DRAG COUNTER 0-60mph TIMER
+      break;
+    }
+    case 6: {
+      // DTC CODE DISPLAY
       break;
     }
   }
