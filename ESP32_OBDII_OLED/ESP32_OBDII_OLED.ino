@@ -81,8 +81,6 @@ void obdTask(void *pvParameters) {
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
             temp_kph = value;
-            lastSpeedTime = now;
-            prev_kph = temp_kph;
             double dist_delta = 0.0;
             uint32_t time_delta_ms = 0;
 
@@ -97,6 +95,10 @@ void obdTask(void *pvParameters) {
                 dist_delta = avg_speed * time_hours;
               }
             }
+
+            // Update Variables after Calculations
+            lastSpeedTime = now;
+            prev_kph = temp_kph;
 
             // Save to Globals
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -118,8 +120,6 @@ void obdTask(void *pvParameters) {
           uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
-            lastFuelTime = now;
-            prev_maf = temp_maf;
             float_t temp_maf = value;
             double fuel_delta = 0.0;
             int local_mode = 1;
@@ -135,6 +135,10 @@ void obdTask(void *pvParameters) {
                 fuel_delta = avg_fuel_rate * time_hours;
               }
             }
+
+            // Update Variables after Calculations
+            lastFuelTime = now;
+            prev_maf = temp_maf;
             
             // Save to Global (Mutex Block)
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
