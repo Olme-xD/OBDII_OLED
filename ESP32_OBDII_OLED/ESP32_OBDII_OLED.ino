@@ -54,9 +54,10 @@ volatile float_t global_rpm = -1.0;
 volatile float_t global_load = -1.0;
 volatile float_t global_fuel = -1.0;
 volatile double global_totalDistanceTraveled = 0.0;
+volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
-volatile uint32_t global_lastPressed = millis();
+volatile uint32_t global_lastPressed = 0;
 volatile int global_mode = 1;
 typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL} ObdState;
 
@@ -65,21 +66,44 @@ void obdTask(void *pvParameters) {
 
   static uint32_t lastSuccessfulMpgPollTime = 0;
   static ObdState currentState = OBD_STATE_KPH;
-  static float_t temp_kph = 0.0;  // Store speed between states
+  static float_t temp_kph = 0.0;
+  static float_t prev_kph = 0.0;
+  static float_t prev_maf = 0.0;
+  static uint32_t lastSpeedTime = 0;
+  static uint32_t lastFuelTime = 0;
 
   for (;;) {
     if (ELM_PORT.connected()) {
       switch (currentState) {
         case OBD_STATE_KPH: {
           float_t value = myELM327.kph();
+          uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
             temp_kph = value;
+            lastSpeedTime = now;
+            prev_kph = temp_kph;
+            double dist_delta = 0.0;
+            uint32_t time_delta_ms = 0;
 
-            // Update Global KPH
+            // Only calculate if we have a previous timestamp (not the first loop)
+            if (lastSpeedTime > 0) {
+              time_delta_ms = now - lastSpeedTime;
+              double time_hours = time_delta_ms / 3600000.0;
+
+              // Distance = Average of (Current + Prev) * Time
+              if (temp_kph > 0 || prev_kph > 0) {
+                float avg_speed = (temp_kph + prev_kph) / 2.0;
+                dist_delta = avg_speed * time_hours;
+              }
+            }
+
+            // Save to Globals
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               global_vss_kph = temp_kph;
-              global_lastDataUpdate = millis(); // Update timestamp here so the "*" stays alive even if MAF fails
+              global_totalDistanceTraveled += dist_delta;
+              if (temp_kph > 0) global_totalDistanceTraveledTimer += time_delta_ms;
+              global_lastDataUpdate = now; 
               xSemaphoreGive(dataMutex);
             }
 
@@ -91,37 +115,37 @@ void obdTask(void *pvParameters) {
         }
         case OBD_STATE_MAF: {
           float_t value = myELM327.mafRate();
+          uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
+            lastFuelTime = now;
+            prev_maf = temp_maf;
             float_t temp_maf = value;
-            uint32_t pollCompleteTime = millis();
-            double distance_delta_km = 0.0;
-            double fuel_delta_l = 0.0;
+            double fuel_delta = 0.0;
             int local_mode = 1;
 
-            // Fuel Rate (L/hr) = MAF * 0.3309
-            float_t local_fuelRate_lph = temp_maf * 0.33094;
+            // Calculate if NOT the First Loop
+            if (lastFuelTime > 0) {
+              double time_hours = (now - lastFuelTime) / 3600000.0;
 
-            if (lastSuccessfulMpgPollTime > 0) {
-              double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
-              fuel_delta_l = local_fuelRate_lph * deltaTime_hours;
-
-              if (temp_kph > 0) {
-                distance_delta_km = temp_kph * deltaTime_hours;
+              // Fuel Rate (L/hr) = MAF * 0.33094 && Average of (Current + Prev) * Time
+              if (temp_maf > 0 || prev_maf > 0) {
+                float avg_maf = (temp_maf + prev_maf) / 2.0;
+                float avg_fuel_rate = avg_maf * 0.33094;
+                fuel_delta = avg_fuel_rate * time_hours;
               }
             }
-            lastSuccessfulMpgPollTime = pollCompleteTime;
-
-            // Save & Retrive Global Variables
+            
+            // Save to Global (Mutex Block)
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               global_maf = temp_maf;
-              global_totalDistanceTraveled += distance_delta_km;
-              global_totalFuelConsumed += fuel_delta_l;
-              global_lastDataUpdate = millis();
+              global_totalFuelConsumed += fuel_delta;
+              global_lastDataUpdate = now;
               local_mode = global_mode;
               xSemaphoreGive(dataMutex);
             }
 
+            // Selective Polling Logic
             if (local_mode == 3) {
               currentState = OBD_STATE_RPM;
             } else {
@@ -141,12 +165,14 @@ void obdTask(void *pvParameters) {
             // Update Global RPM
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               global_rpm = value;
+              global_lastDataUpdate = millis();
               xSemaphoreGive(dataMutex);
             }
 
             currentState = OBD_STATE_LOAD;
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
+            currentState = OBD_STATE_LOAD;
           }
           break;
         }
@@ -158,12 +184,14 @@ void obdTask(void *pvParameters) {
             // Update Global Engine Load
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               global_load = value;
+              global_lastDataUpdate = millis();
               xSemaphoreGive(dataMutex);
             }
 
             currentState = OBD_STATE_FUEL;
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
+            currentState = OBD_STATE_FUEL;
           }
           break;
         }
@@ -175,12 +203,14 @@ void obdTask(void *pvParameters) {
             // Update Global Fuel Level
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               global_fuel = value;
+              global_lastDataUpdate = millis();
               xSemaphoreGive(dataMutex);
             }
 
             currentState = OBD_STATE_KPH;
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
+            currentState = OBD_STATE_KPH;
           }
           break;
         }
@@ -208,6 +238,39 @@ void obdTask(void *pvParameters) {
 
     vTaskDelay(pdMS_TO_TICKS(1));
   }
+}
+
+String timerTransform(uint32_t millisTime) {
+  String finalTimer = "";
+
+  // Calculate hours, minutes, and seconds
+  uint16_t seconds = millisTime / 1000;
+  uint16_t hours = seconds / 3600;
+  seconds %= 3600;
+  uint16_t minutes = seconds / 60;
+  seconds %= 60;
+
+  // Format Hours
+  if (hours >= 1) {
+    if (hours < 10) {
+        finalTimer += '0';
+    }
+    finalTimer += String(hours) + ":";
+  }
+
+  // Format Minutes
+  if (minutes < 10) {
+      finalTimer += '0';
+  }
+  finalTimer += String(minutes) + ":";
+
+  // Format Seconds
+  if (seconds < 10) {
+      finalTimer += '0';
+  }
+  finalTimer += String(seconds);
+
+  return finalTimer;
 }
 
 void setup() {
@@ -267,11 +330,11 @@ void setup() {
 void loop() {
   // Local Variables
   float_t local_kph, local_maf;
-  double local_totalDist, local_totalFuel;
-  uint32_t local_lastUpdate;
+  double local_totalDistanceTraveled, local_totalFuel;
+  uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
   static uint32_t local_lastPressed = 0;
   static bool buttonActive = false;
-  static int local_mode = 1;
+  static int local_mode = 5;
 
   // Switch Reading State
   if (digitalRead(SWITCH) == HIGH) {
@@ -295,7 +358,8 @@ void loop() {
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
     local_kph = global_vss_kph;
     local_maf = global_maf;
-    local_totalDist = global_totalDistanceTraveled;
+    local_totalDistanceTraveled = global_totalDistanceTraveled;
+    local_totalDistanceTraveledTimer = global_totalDistanceTraveledTimer;
     local_totalFuel = global_totalFuelConsumed;
     local_lastUpdate = global_lastDataUpdate;
     global_lastPressed = local_lastPressed;
@@ -323,10 +387,10 @@ void loop() {
       }
 
       float_t avg_mpg = 0.0;
-      bool isAverageMpgValid = (local_totalDist > 0.1 && local_totalFuel > 0.001);
+      bool isAverageMpgValid = (local_totalDistanceTraveled > 0.1 && local_totalFuel > 0.001);
 
       if (isAverageMpgValid) {
-        double avg_lp100k = (local_totalFuel / local_totalDist) * 100.0;
+        double avg_lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
         avg_mpg = 235.21 / avg_lp100k;
       }
 
@@ -364,6 +428,23 @@ void loop() {
       break;
     }
     case 2: {
+      display.setFont(NULL);
+      display.setTextSize(1);
+
+      // Display Distance Traveled
+      display.println("Distance Traveled:");
+      display.print((local_totalDistanceTraveled * 0.621371), 1);
+      display.println(" mi");
+      display.println();
+
+      // Display Time While Above 0 KPH
+      display.println("Drive Timer:");
+      display.println(timerTransform(local_totalDistanceTraveledTimer));
+      display.println();
+
+      // Display Global Time
+      display.println("Global Timer:");
+      display.println(timerTransform(millis()));
       break;
     }
     case 3: {
@@ -373,6 +454,43 @@ void loop() {
       break;
     }
     case 5: {
+      // --- DEBUG TRIP COMPUTERS ---
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setFont(NULL); // Use default font for text
+      display.setTextSize(1);
+
+      // 1. Show Total Distance (The "Odometer")
+      display.setCursor(0, 0);
+      display.print("Dist: ");
+      // Convert km to miles for easier verification
+      display.print(local_totalDistanceTraveled * 0.621371, 2); 
+      display.print(" mi");
+
+      // 2. Show Total Fuel (The "Gas Tank")
+      display.setCursor(0, 15);
+      display.print("Fuel: ");
+      // Convert Liters to Gallons
+      display.print(local_totalFuel * 0.264172, 3); 
+      display.print(" gal");
+
+      // 3. Show the Calculated Average (The Result)
+      display.setCursor(0, 30);
+      display.print("Calc Avg: ");
+      if (local_totalDistanceTraveled > 0.1) {
+         double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
+         display.print(235.21 / lp100k, 1);
+      } else {
+         display.print("--");
+      }
+
+      // 4. Show Raw Sensor Data (To check Idle)
+      display.setCursor(0, 45);
+      display.print("MAF: "); display.print(local_maf, 1);
+      display.print(" g/s");
+      
+      display.display();
+      delay(100);
       break;
     }
   }
