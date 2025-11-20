@@ -62,6 +62,15 @@ volatile int global_mode = 1;
 typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL, OBD_STATE_DTC} ObdState;
 
 void obdTask(void *pvParameters) {
+  /* * Function: obdTask
+  * Purpose: Runs on Core 0 via FreeRTOS to handle all Bluetooth communication.
+  * Logic: 
+  * - Implements a State Machine to cycle through polling specific PIDs (Speed, MAF, RPM, etc.).
+  * - Performs physics calculations (Distance = Speed * Time, Fuel = MAF * Time) between polls.
+  * - Updates global variables safely using a Mutex (semaphore) to prevent data race conditions with the display loop.
+  * - Handles automatic reconnection if the Bluetooth link drops.
+  */
+
   DEBUG_PORT.println("OBD Task started on Core 0");
 
   static uint32_t lastSuccessfulMpgPollTime = 0;
@@ -250,6 +259,14 @@ void obdTask(void *pvParameters) {
 }
 
 String timerTransform(uint32_t millisTime) {
+  /* * Function: timerTransform
+  * Purpose: Helper utility to format a duration into a readable String.
+  * Logic: 
+  * - Takes a time input in milliseconds.
+  * - math to break it down into Hours, Minutes, and Seconds.
+  * - Returns a formatted String (e.g., "01:05:30" or "05:30") for the OLED display.
+  */
+
   String finalTimer = "";
 
   // Calculate hours, minutes, and seconds
@@ -283,6 +300,15 @@ String timerTransform(uint32_t millisTime) {
 }
 
 void setup() {
+  /* * Function: setup
+  * Purpose: Standard Arduino initialization routine.
+  * Logic: 
+  * - Initializes Serial (Debug) and the OLED display.
+  * - Connects to the ELM327 OBDII dongle via the specific MAC address.
+  * - Creates the Mutex for thread-safe data sharing.
+  * - Pins 'obdTask' to Core 0 to run in the background parallel to the main loop.
+  */
+
   DEBUG_PORT.begin(115200);
   pinMode(SWITCH, INPUT_PULLDOWN);
 
@@ -337,6 +363,15 @@ void setup() {
 }
 
 void loop() {
+  /* * Function: loop
+  * Purpose: The main User Interface task running on Core 1.
+  * Logic: 
+  * - Reads the physical button state to switch between display modes (1-6).
+  * - Retrieves the latest sensor data from Global variables (using Mutex to ensure data integrity).
+  * - Performs display-specific math (Instant MPG, L/100km, Average MPG).
+  * - Draws the specific text and numbers to the OLED screen based on the selected 'local_mode'.
+  */
+
   // Local Variables
   float_t local_kph, local_maf;
   double local_totalDistanceTraveled, local_totalFuel;

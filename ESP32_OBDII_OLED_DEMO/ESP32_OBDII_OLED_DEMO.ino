@@ -1,17 +1,19 @@
 /*
-* ESP32_OBDII_OLED.ino
+* ESP32_OBDII_OLED_DEMO.ino
 * Created by Olme-xD
-* On November 15, 2025
+* Modified for DEMO MODE (Made with AI from Running Version)
 *
-* MODIFIED FOR DUMMY DATA / SIMULATION
+* FEATURES:
+  * SIMULATION MODE: Generates fake Speed, RPM, MAF, and Load data.
+  * Dual-Core (FreeRTOS): Core 0 runs Physics Simulation, Core 1 updates display.
+  * Calculates true average MPG based on simulated physics.
 */
 
 // Libraries
+#include <math.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <ELMduino.h>
-#include "BluetoothSerial.h"
 #include "FreeSansBold40pt7b.h"
 #include "FreeSansBold14pt7b.h"
 
@@ -23,134 +25,158 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-// OBDII Dongle Mac Address
-uint8_t address[6] = { 0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33 };
+// Switch Pin Set
+#define SWITCH 12
 
 // Instances
-BluetoothSerial SerialBT;
-#define ELM_PORT SerialBT
 #define DEBUG_PORT Serial
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-ELM327 myELM327;
-TaskHandle_t obdTaskHandle;
+TaskHandle_t simTaskHandle;
 SemaphoreHandle_t dataMutex;
 
 // Global Variables
-volatile float_t global_vss_kph = -1.0;
-volatile float_t global_maf = -1.0;
+volatile float_t global_vss_kph = 0.0;
+volatile float_t global_maf = 0.0;
+volatile float_t global_rpm = 0.0;
+volatile float_t global_load = 0.0;
+volatile float_t global_fuel = 100.0; // Start at 100%
 volatile double global_totalDistanceTraveled = 0.0;
+volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
+volatile int global_mode = 1;
 
-void obdTask(void *pvParameters) {
-  DEBUG_PORT.println("OBD Task started on Core 0");
+// Simulation Helper Variables
+float sim_speed = 0.0;
+float sim_rpm = 800.0;
+int sim_phase = 0; // 0=Idle, 1=Accel, 2=Cruise, 3=Decel
 
-  static uint32_t lastSuccessfulMpgPollTime = 0;
+void simulationTask(void *pvParameters) {
+  /* * Function: simulationTask
+   * Purpose: Runs on Core 0 to simulate a driving cycle.
+   * Logic: 
+   * - Generates synthetic data for Speed, RPM, and MAF.
+   * - Performs the same physics integration (Dist = Speed*Time) as the real app.
+   * - Cycles through Idle -> Accel -> Cruise -> Decel phases.
+   */
+  
+  DEBUG_PORT.println("Simulation Task started on Core 0");
 
-  // Variable to cycle through dummy data states
-  static int dummyState = 0;
+  uint32_t lastSimTime = millis();
 
   for (;;) {
-    // if (ELM_PORT.connected()) { // Replaced with if(true) for simulation
-    if (true) {
+    uint32_t now = millis();
+    uint32_t time_delta_ms = now - lastSimTime;
+    double time_hours = time_delta_ms / 3600000.0;
+    lastSimTime = now;
 
-      // DUMMY DATA GENERATION
-      // This block replaces the real myELM327 calls
-      float_t local_kph;
-      float_t local_maf;
-
-      switch (dummyState) {
-        case 0:              // State 0: Cruising (Good MPG)
-          local_kph = 90.0;  // ~56 mph
-          local_maf = 20.0;  // Moderate MAF
-          break;
-        case 1:  // State 1: Accelerating (Bad MPG)
-          local_kph = 95.0;
-          local_maf = 45.0;  // High MAF
-          break;
-        case 2:  // State 2: Idle (Should show "Idle")
-          local_kph = 0.0;
-          local_maf = 2.5;  // Low idle MAF
-          break;
-        case 3:  // State 3: Timeout (Should show "---")
-          local_kph = -1.0;
-          local_maf = -1.0;
-          break;
-      }
-      // Cycle to the next state
-      dummyState = (dummyState + 1) % 4;
-      // END DUMMY DATA
-
-
-      // Poll Primary PIDs
-      // float_t local_kph = myELM327.kph();   // REPLACED
-      // float_t local_maf = myELM327.mafRate(); // REPLACED
-      uint32_t pollCompleteTime = millis();
-
-      //
-      // ALL YOUR ORIGINAL LOGIC IS UNCHANGED FROM HERE
-      //
-
-      // Check Data Validity
-      bool isVssValid = (local_kph > -1);
-      bool isMafValid = (local_maf > -1);
-      bool isAnyDataValid = (isVssValid || isMafValid);
-      bool isMpgDataValid = (isVssValid && isMafValid && local_kph > 0);
-
-      double distance_delta_km = 0.0;
-      double fuel_delta = 0.0;
-
-      // The code for FUEL was provided by AI, not sure if it actually works.
-      // Calculate Deltas (if valid)
-      if (isMpgDataValid) {
-        // Fuel Rate (L/hr) = (local_maf * 3600) / (14.7 * 740) = local_maf * 0.3309
-        float_t local_fuelRate_lph = local_maf * 0.33094;
-
-        if (lastSuccessfulMpgPollTime > 0) {
-          double deltaTime_hours = (pollCompleteTime - lastSuccessfulMpgPollTime) / 3600000.0;
-          distance_delta_km = local_kph * deltaTime_hours;
-          fuel_delta = local_fuelRate_lph * deltaTime_hours;
-        }
-        lastSuccessfulMpgPollTime = pollCompleteTime;
-      }
-
-      // Update Global Variables (Critical Section)
-      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        global_vss_kph = isVssValid ? local_kph : -1;
-        global_maf = isMafValid ? local_maf : -1;
-
-        if (isAnyDataValid) {
-          global_lastDataUpdate = pollCompleteTime;
-        }
-
-        global_totalDistanceTraveled += distance_delta_km;
-        global_totalFuelConsumed += fuel_delta;
-
-        xSemaphoreGive(dataMutex);
-      }
-
-      // Add a delay to simulate polling rate
-      vTaskDelay(pdMS_TO_TICKS(2000));  // Change state every 2 seconds
+    // --- 1. PHYSICS SIMULATION LOGIC ---
+    // Change phases every few seconds for demo variety
+    static uint32_t phaseTimer = 0;
+    if (now - phaseTimer > 5000) { 
+        sim_phase++;
+        if (sim_phase > 3) sim_phase = 1; // Loop Accel->Cruise->Decel (Skip long idle)
+        phaseTimer = now;
     }
-    /* // Reconnection block removed for simulation
-   else {
-     // Handle Reconnection
-     DEBUG_PORT.println("OBD Task: Connection lost, trying to reconnect...");
-     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-       global_vss_kph = global_maf = -1.0;
-       xSemaphoreGive(dataMutex);
-     }
-     
-     myELM327.begin(ELM_PORT, true, 2000);
-     lastSuccessfulMpgPollTime = 0; 
-     vTaskDelay(pdMS_TO_TICKS(3000)); // Wait 3s before retry
-   }
-   */
+
+    switch(sim_phase) {
+        case 0: // IDLE
+            sim_speed = 0;
+            sim_rpm = 800 + random(-20, 20);
+            global_maf = 2.5 + (random(-10, 10) / 10.0);
+            global_load = 15;
+            break;
+        case 1: // ACCELERATE
+            sim_speed += 0.8; // Gain speed
+            if(sim_speed > 120) sim_speed = 120;
+            sim_rpm = 2000 + (sim_speed * 30);
+            global_maf = 20.0 + (sim_speed * 0.5) + random(0, 5);
+            global_load = 80;
+            break;
+        case 2: // CRUISE
+            sim_speed = 100 + (sin(now / 1000.0) * 2); // Gentle wave
+            sim_rpm = 2200 + random(-50, 50);
+            global_maf = 15.0 + random(-2, 2); // Low MAF = Good MPG
+            global_load = 30;
+            break;
+        case 3: // DECELERATE
+            sim_speed -= 1.5;
+            if(sim_speed < 0) sim_speed = 0;
+            sim_rpm = 1000 + (sim_speed * 10);
+            global_maf = 3.0; // Coasting
+            global_load = 10;
+            break;
+    }
+
+    // --- 2. DATA INTEGRATION (Real Math) ---
+    double dist_delta = 0.0;
+    double fuel_delta = 0.0;
+
+    // Distance Integration
+    if (sim_speed > 0) {
+        dist_delta = sim_speed * time_hours;
+    }
+
+    // Fuel Integration (L/hr = MAF * 0.33094)
+    float fuel_rate = global_maf * 0.33094;
+    fuel_delta = fuel_rate * time_hours;
+    
+    // Drain the fake fuel tank
+    if (global_fuel > 0) global_fuel -= (fuel_delta * 5); // *5 to show it moving faster
+
+    // --- 3. UPDATE GLOBALS SAFELEY ---
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        global_vss_kph = sim_speed;
+        global_rpm = sim_rpm;
+        
+        global_totalDistanceTraveled += dist_delta;
+        global_totalFuelConsumed += fuel_delta;
+        
+        if (sim_speed > 0) {
+            global_totalDistanceTraveledTimer += time_delta_ms;
+        }
+        
+        global_lastDataUpdate = now; 
+        xSemaphoreGive(dataMutex);
+    }
+
+    // Update rate: 20Hz (Smooth animation)
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
+String timerTransform(uint32_t millisTime) {
+  /* * Function: timerTransform
+   * Purpose: Helper utility to format a duration into a readable String.
+   */
+  String finalTimer = "";
+  uint16_t seconds = millisTime / 1000;
+  uint16_t hours = seconds / 3600;
+  seconds %= 3600;
+  uint16_t minutes = seconds / 60;
+  seconds %= 60;
+
+  if (hours >= 1) {
+    if (hours < 10) finalTimer += '0';
+    finalTimer += String(hours) + ":";
+  }
+
+  if (minutes < 10) finalTimer += '0';
+  finalTimer += String(minutes) + ":";
+
+  if (seconds < 10) finalTimer += '0';
+  finalTimer += String(seconds);
+
+  return finalTimer;
+}
+
 void setup() {
+  /* * Function: setup
+   * Purpose: DEMO Initialization.
+   * Logic: Starts OLED and Simulation Task immediately.
+   */
   DEBUG_PORT.begin(115200);
+  pinMode(SWITCH, INPUT_PULLDOWN);
 
   // Initialize OLED Display
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -159,135 +185,211 @@ void setup() {
     ESP.restart();
   }
 
-  // Show Startup Message on OLED
+  // Show Startup Message
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("ESP32 OBD-II Reader");
-  display.println("Dual Core (MAC)");
-  display.println("-----------------");
-  // display.println("Connecting via MAC..."); // Changed for simulation
-  display.println("SIMULATION MODE");
+  display.println("OBD-II Reader\n");
+  display.println("DEMO MODE ACTIVE");
+  display.println("---------------------");
+  display.println("Simulating Data...");
   display.display();
+  delay(2000);
 
-  // Connect to ELM327 via MAC Address
-  // ELM_PORT.begin("ESP32_OBD_OLED", true); // SKIPPED
-
-  /* --- SIMULATION: Auto-connect ---
- if (!ELM_PORT.connect(address)) {
-   DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #1");
-   display.println("\nBT Connect Failed!");
-   display.display();
-   delay(2000);
-   ESP.restart();
- }
- 
- if (!myELM327.begin(ELM_PORT, true, 2000)) {
-   DEBUG_PORT.println("CONNECTION ERROR ->> PHASE #2");
-   display.println("\nELM Init Failed!");
-   display.display();
-   delay(2000);
-   ESP.restart();
- }
- */
-
-  DEBUG_PORT.println("CONNECTED TO ELM327! (SIMULATED)");
-  display.println("\nCONNECTED!");
-  display.display();
-  delay(200);
-
-  // Create the Mutex and Core 0 Task
   dataMutex = xSemaphoreCreateMutex();
   if (dataMutex == NULL) {
-    DEBUG_PORT.println("Mutex creation failed!");
     ESP.restart();
   }
 
-  xTaskCreatePinnedToCore(obdTask, "OBDTask", 8192, NULL, 1, &obdTaskHandle, 0);
+  // Start the Simulation Task instead of the OBD Task
+  xTaskCreatePinnedToCore(simulationTask, "SimTask", 4096, NULL, 1, &simTaskHandle, 0);
 }
 
 void loop() {
-  //
-  // YOUR ORIGINAL loop() IS 100% UNCHANGED
-  //
+  /* * Function: loop
+   * Purpose: Main Display Loop (Core 1).
+   * Logic: Identical to original, but reads generated variables.
+   */
 
-  // Read Shared Data (Atomic)
+  // Local Variables
   float_t local_kph, local_maf;
-  double local_totalDist, local_totalFuel;
-  uint32_t local_lastUpdate;
+  double local_totalDistanceTraveled, local_totalFuel;
+  uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
+  static uint32_t local_lastPressed = 0;
+  static bool buttonActive = false;
+  static int local_mode = 3;
 
+  // Switch Reading State
+  if (digitalRead(SWITCH) == HIGH) {
+    if (!buttonActive) {
+      buttonActive = true;
+      local_lastPressed = millis();
+    }
+    if ((millis() - local_lastPressed) > 1000) {
+      local_lastPressed = millis();
+      if (local_mode >= 4) { // Reduced modes for Demo
+        local_mode = 1;
+      } else {
+        local_mode++;
+      }
+    }
+  } else {
+    buttonActive = false;
+  }
+  
+  // Retrieve Data
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
     local_kph = global_vss_kph;
     local_maf = global_maf;
-    local_totalDist = global_totalDistanceTraveled;
+    local_totalDistanceTraveled = global_totalDistanceTraveled;
+    local_totalDistanceTraveledTimer = global_totalDistanceTraveledTimer;
     local_totalFuel = global_totalFuelConsumed;
     local_lastUpdate = global_lastDataUpdate;
+    global_mode = local_mode;
     xSemaphoreGive(dataMutex);
   } else {
-    return;  // Skip this frame
+    return;
   }
 
-  // Perform Display Calculations
-  float_t local_mph = local_kph * 0.621371;
-  float_t inst_mpg = 0.0;
-  bool isInstantMpgValid = (local_kph > 0 && local_maf > 0);
-
-  if (isInstantMpgValid) {
-    inst_mpg = (14.7 * 6.17 * 4.54 * local_kph * 0.621371) / (3600 * local_maf / 100);
-    if (inst_mpg > 90) inst_mpg = 90;
-  }
-
-  // The code for AVERAGE MPG was provided by AI, not sure if it actually works.
-  // Average MPG Calculation (True Avg) ... TRULY ACCURATE IF FUEL IS ACCURATE
-  float_t avg_mpg = 0.0;
-  bool isAverageMpgValid = (local_totalDist > 0 && local_totalFuel > 0);
-
-  if (isAverageMpgValid) {
-    double avg_lp100k = (local_totalFuel / local_totalDist) * 100.0;
-    avg_mpg = 235.21 / avg_lp100k;
-  }
-
-  // Update the OLED Display
+  // Clear Display
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  // Instant MPG (Large)
-  display.setFont(&FreeSansBold40pt7b);
-  // 'y=63' places the font baseline at the bottom of the 64px screen
-  display.setCursor(0, 60);
+  // Mode Switching
+  switch(local_mode) {
+    case 1: {
+      // MPG & MPH calculations
+      float_t inst_mpg = 0.0;
+      bool isInstantMpgValid = (local_kph > 0 && local_maf > 0);
 
-  if (isInstantMpgValid) {
-    display.print(round(inst_mpg), 0);
-  } else if (local_kph == 0) {
-    display.print("--");
-  } else {
-    display.print("--");
-  }
+      if (isInstantMpgValid) {
+        inst_mpg = round((14.7 * 6.17 * 4.54 * local_kph * 0.621371) / (3600 * local_maf / 100));
+        if (inst_mpg > 99.0) inst_mpg = 99.0;
+      }
 
-  // Average MPG
-  // Set to top-right corner
-  display.setFont(&FreeSansBold14pt7b);
-  // 'y=14' is a good top-margin for this font size
-  display.setCursor(98, 20);
-  if (isAverageMpgValid) {
-    display.print(round(avg_mpg), 0);
-  } else {
-    display.print("--");
-  }
+      float_t avg_mpg = 0.0;
+      bool isAverageMpgValid = (local_totalDistanceTraveled > 0.1 && local_totalFuel > 0.001);
 
-  // Status Sign
-  display.setFont(NULL);  // Use NULL to go back to the default font
-  display.setTextSize(1);
-  display.setCursor(118, 55);  // Bottom-right corner
-  if (millis() - local_lastUpdate < 500) {
-    display.print("*");  // "Live"
-  } else {
-    display.print("?");  // "Stale"
+      if (isAverageMpgValid) {
+        double avg_lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
+        avg_mpg = 235.21 / avg_lp100k;
+      }
+
+      // Instant MPG
+      display.setFont(&FreeSansBold40pt7b);
+      display.setCursor(0, 60);
+      if (isInstantMpgValid) {
+        display.print(round(inst_mpg), 0);
+      } else if (local_kph == 0 && local_maf > 0) {
+        display.print("00"); 
+      } else {
+        display.print("--");
+      }
+
+      // Average MPG
+      display.setFont(&FreeSansBold14pt7b);
+      display.setCursor(98, 20);
+      if (isAverageMpgValid) {
+        display.print(round(avg_mpg), 0);
+      } else {
+        display.print("--");
+      }
+
+      // Status Sign (D for Demo)
+      display.setFont(NULL);
+      display.setTextSize(1);
+      display.setCursor(118, 55);
+      display.print("D");
+      break;
+    }
+    case 2: {
+      display.setFont(NULL);
+      display.setTextSize(1);
+
+      // Display Distance Traveled
+      display.println("Distance Traveled:");
+      display.print((local_totalDistanceTraveled * 0.621371), 1);
+      display.println(" mi");
+      display.println();
+
+      // Display Time While Above 0 KPH
+      display.println("Drive Timer:");
+      display.println(timerTransform(local_totalDistanceTraveledTimer));
+      display.println();
+
+      // Display Global Time
+      display.println("Global Timer:");
+      display.println(timerTransform(millis()));
+      break;
+    }
+    case 3: {
+      display.setFont(NULL);
+      display.setTextSize(1);
+
+      // Show Total Distance
+      display.setCursor(0, 10);
+      display.print("Dist: ");
+      display.print(local_totalDistanceTraveled * 0.621371, 2); 
+      display.print(" mi");
+
+      // Show Total Fuel
+      display.setCursor(0, 23);
+      display.print("Fuel: ");
+      display.print(local_totalFuel * 0.264172, 3); 
+      display.print(" gal");
+
+      // Calculated MPG Average
+      display.setCursor(0, 43);
+      display.print("Calc Avg: ");
+      if (local_totalDistanceTraveled > 0.1) {
+        double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
+        display.print(235.21 / lp100k, 1);
+      } else {
+        display.print("--");
+      }
+
+      // Show Raw Sensor Data
+      display.setCursor(0, 58);
+      display.print("MAF: "); display.print(local_maf, 1);
+      display.print(" g/s");
+      break;
+    }
+    case 4: {
+      float_t local_rpm = 0.0;
+      float_t local_fuelGauge = 0.0;
+      float_t local_engineLoad = 0.0;
+      
+      if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        local_rpm = global_rpm;
+        local_fuelGauge = global_fuel;
+        local_engineLoad = global_load;
+        xSemaphoreGive(dataMutex);
+      }
+
+      display.setFont(NULL);
+      display.setTextSize(2);
+
+      // Display RPM
+      display.setCursor(0, 10);
+      display.print("RPM: ");
+      display.println(local_rpm, 0);
+
+      // Display Engine Load
+      display.setCursor(0, 28);
+      display.print("LOAD: ");
+      display.print(local_engineLoad, 0);
+      display.println("%");
+
+      // Display Fuel Level
+      display.setCursor(0, 43);
+      display.print("FUEL: ");
+      display.print(local_fuelGauge, 1);
+      display.println("%");
+      break;
+    }
   }
 
   display.display();
-
-  // Control screen refresh rate
-  delay(100);  // ~10 times/sec
+  delay(50); // Faster refresh for smooth demo animation
 }
