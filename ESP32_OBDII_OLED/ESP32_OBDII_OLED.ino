@@ -377,26 +377,44 @@ void loop() {
   float_t local_kph, local_maf;
   double local_totalDistanceTraveled, local_totalFuel;
   uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
-  static uint32_t local_lastPressed = 0;
-  static bool buttonActive = false;
   static int local_mode = 3;
+  static int tapCounter = 0;             
+  static uint32_t lastTapTime = 0;       
+  static int lastButtonReading = LOW;    
+  static int currentButtonState = LOW;   
+  static uint32_t lastDebounceTime = 0;  
+  const uint32_t tapTimeout = 2000;
 
-  // Switch Reading State
-  if (digitalRead(SWITCH) == HIGH) {
-    if (!buttonActive) {
-      buttonActive = true;
-      local_lastPressed = millis(); // Reset Timer
-    }
-    if ((millis() - local_lastPressed) > 1000) {
-      local_lastPressed = millis();
-      if (local_mode >= 6) {
-        local_mode = 1;
-      } else {
-        local_mode++;
+  // Read Switch State
+  int reading = digitalRead(SWITCH);
+
+  // If the switch changed, reset the debounce timer
+  if (reading != lastButtonReading) {
+    lastDebounceTime = millis();
+  }
+  lastButtonReading = reading; 
+
+  // If reading is stable
+  if ((millis() - lastDebounceTime) > 50) {
+    if (reading != currentButtonState) {
+      currentButtonState = reading;
+
+      // Detect Press (Rising Edge)
+      if (currentButtonState == HIGH) {
+        tapCounter++;
+        lastTapTime = millis();
       }
     }
-  } else {
-    buttonActive = false;
+  }
+  
+  if (tapCounter > 0 && (millis() - lastTapTime) > tapTimeout) {
+    // If valid mode (1-6)
+    if (tapCounter >= 1 && tapCounter <= 6) {
+      local_mode = tapCounter;
+    } else {
+      local_mode = 1; // Default to Mode 1 if tapped too many times
+    }
+    tapCounter = 0; // Reset bucket
   }
   
   // Read & Retrive Data to Global Variables
@@ -636,11 +654,14 @@ void loop() {
     }
     case 6: {
       // DTC CODE DISPLAY
+      display.setCursor(0, 0);
+      display.setTextSize(2);
+      display.println("MODE 6");
       break;
     }
   }
 
   // Display for Every Mode
   display.display();
-  delay(100);
+  delay(10);
 }
