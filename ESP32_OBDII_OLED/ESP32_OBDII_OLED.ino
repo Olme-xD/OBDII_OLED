@@ -54,6 +54,7 @@ volatile float_t global_maf = -1.0;
 volatile float_t global_rpm = -1.0;
 volatile float_t global_load = -1.0;
 volatile float_t global_fuel = -1.0;
+#define FUEL_CORRECTION 1.10 // Calibration for Fuel Readings
 volatile double global_totalDistanceTraveled = 0.0;
 volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
@@ -125,7 +126,7 @@ void obdTask(void *pvParameters) {
           break;
         }
         case OBD_STATE_MAF: {
-          float_t value = myELM327.mafRate();
+          float_t value = myELM327.mafRate() * FUEL_CORRECTION;
           uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
@@ -559,7 +560,78 @@ void loop() {
       break;
     }
     case 5: {
-      // IMPLEMENTATION FOR DRAG COUNTER 0-60mph TIMER
+      static uint32_t startTime = 0;
+      static bool isRunning = false;
+      static float timer_30 = 0.0; 
+      static float timer_60 = 0.0;
+      static float timer_80 = 0.0;
+      float current_mph = local_kph * 0.621371;
+
+      // Reset State
+      if (local_kph == 0) {
+        isRunning = false;
+        timer_30 = 0.0;
+        timer_60 = 0.0;
+        timer_80 = 0.0;
+      }
+
+      // Start Trigger
+      if (current_mph > 0.5 && !isRunning && timer_80 == 0.0) {
+        startTime = millis();
+        isRunning = true;
+      }
+
+      // Running & Latching Logic
+      if (isRunning) {
+        float currentDuration = (millis() - startTime) / 1000.0;
+
+        // Latch 30 MPH
+        if (current_mph >= 30.0 && timer_30 == 0.0) {
+          timer_30 = currentDuration;
+        }
+
+        // Latch 60 MPH
+        if (current_mph >= 60.0 && timer_60 == 0.0) {
+          timer_60 = currentDuration;
+        }
+
+        // Latch 80 MPH (Final Stop)
+        if (current_mph >= 80.0 && timer_80 == 0.0) {
+          timer_80 = currentDuration;
+          isRunning = false; // Stop the main timer
+        }
+
+        // Resets Timer After 3 Minutes Regarless of Any State
+        if (currentDuration > 180.0) isRunning = false;
+      }
+
+      // Speed
+      display.setTextSize(3);
+      display.setCursor(0, 25);
+      display.print((int)current_mph);
+      display.setTextSize(1);
+      
+      // 0-30 Line
+      display.setCursor(65, 10);
+      display.print("30: ");
+      if (timer_30 > 0) display.print(timer_30, 2);
+      else display.print(" --.-");
+
+      // 0-60 Line
+      display.setCursor(65, 25);
+      display.print("60: ");
+      if (timer_60 > 0) display.print(timer_60, 2);
+      else display.print(" --.-");
+
+      // 0-80 Line
+      display.setCursor(65, 40);
+      display.print("80: ");
+      if (timer_80 > 0) display.print(timer_80, 2);
+      else display.print(" --.-");
+
+      // Status
+      display.setCursor(0, 55);
+      if (local_kph == 0) display.print("READY!");
       break;
     }
     case 6: {
