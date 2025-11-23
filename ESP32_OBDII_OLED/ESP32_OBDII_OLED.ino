@@ -54,7 +54,7 @@ volatile float_t global_maf = -1.0;
 volatile float_t global_rpm = -1.0;
 volatile float_t global_load = -1.0;
 volatile float_t global_fuel = -1.0;
-#define FUEL_CORRECTION 1.10 // Calibration for Fuel Readings
+#define FUEL_CORRECTION 1.08 // Calibration for Fuel Readings
 volatile double global_totalDistanceTraveled = 0.0;
 volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
@@ -93,6 +93,7 @@ void obdTask(void *pvParameters) {
             temp_kph = value;
             double dist_delta = 0.0;
             uint32_t time_delta_ms = 0;
+            int local_mode = 1;
 
             // Calculate if NOT the First Loop
             if (lastSpeedTime > 0) {
@@ -115,11 +116,17 @@ void obdTask(void *pvParameters) {
               global_vss_kph = temp_kph;
               global_totalDistanceTraveled += dist_delta;
               if (temp_kph > 0) global_totalDistanceTraveledTimer += time_delta_ms;
-              global_lastDataUpdate = now; 
+              global_lastDataUpdate = now;
+              local_mode = global_mode;
               xSemaphoreGive(dataMutex);
             }
 
-            currentState = OBD_STATE_MAF;
+            // Selective Polling Logic
+            if (local_mode == 5) {
+              currentState = OBD_STATE_KPH;
+            } else {
+              currentState = OBD_STATE_MAF;
+            }
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
           }
@@ -311,7 +318,7 @@ void setup() {
   */
 
   DEBUG_PORT.begin(115200);
-  pinMode(SWITCH, INPUT_PULLDOWN);
+  pinMode(SWITCH, INPUT_PULLUP);
 
   // Initialize OLED Display
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -377,12 +384,12 @@ void loop() {
   float_t local_kph, local_maf;
   double local_totalDistanceTraveled, local_totalFuel;
   uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
-  static int local_mode = 3;
-  static int tapCounter = 0;             
-  static uint32_t lastTapTime = 0;       
-  static int lastButtonReading = LOW;    
-  static int currentButtonState = LOW;   
-  static uint32_t lastDebounceTime = 0;  
+  static int local_mode = 1;
+  static int tapCounter = 0;
+  static uint32_t lastTapTime = 0;
+  static int lastButtonReading = LOW;
+  static int currentButtonState = LOW;
+  static uint32_t lastDebounceTime = 0;
   const uint32_t tapTimeout = 2000;
 
   // Read Switch State
@@ -403,6 +410,14 @@ void loop() {
       if (currentButtonState == HIGH) {
         tapCounter++;
         lastTapTime = millis();
+
+        // Visual Feedback
+        display.clearDisplay();
+        display.setTextSize(2);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(30, 25);
+        display.print("TAP: "); display.print(tapCounter);
+        display.display();
       }
     }
   }
@@ -491,43 +506,49 @@ void loop() {
     }
     case 2: {
       display.setFont(NULL);
-      display.setTextSize(1);
-
-      // Display Distance Traveled
-      display.println("Distance Traveled:");
-      display.print((local_totalDistanceTraveled * 0.621371), 1);
-      display.println(" mi");
-      display.println();
-
-      // Display Time While Above 0 KPH
-      display.println("Drive Timer:");
-      display.println(timerTransform(local_totalDistanceTraveledTimer));
-      display.println();
 
       // Display Global Time
-      display.println("Global Timer:");
-      display.println(timerTransform(millis()));
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.print("Global Timer:");
+      display.setTextSize(2);
+      display.setCursor(0, 10);
+      display.print(timerTransform(millis()));
+      
+      // Display Time While Above 0 KPH
+      display.setTextSize(1);
+      display.setCursor(0, 28);
+      display.print("Drive Timer:");
+      display.setTextSize(2);
+      display.setCursor(0, 38);
+      display.print(timerTransform(local_totalDistanceTraveledTimer));
+
+      // Display Distance Traveled
+      display.setTextSize(1);
+      display.setCursor(0, 56);
+      display.print("Dist Trav:");
+      display.print((local_totalDistanceTraveled * 0.621371), 1);
+      display.print(" mi");
       break;
     }
     case 3: {
       display.setFont(NULL);
-      display.setTextSize(1);
 
       // Show Total Distance
-      display.setCursor(0, 10);
-      display.print("Dist: ");
+      display.setTextSize(2);
+      display.setCursor(0, 0);
       display.print(local_totalDistanceTraveled * 0.621371, 2); 
       display.print(" mi");
 
       // Show Total Fuel
-      display.setCursor(0, 23);
-      display.print("Fuel: ");
+      display.setCursor(0, 18);
       display.print(local_totalFuel * 0.264172, 3); 
       display.print(" gal");
 
       // Calculated MPG Average
-      display.setCursor(0, 43);
-      display.print("Calc Avg: ");
+      display.setTextSize(1);
+      display.setCursor(0, 46);
+      display.print("MPG Avg: ");
       if (local_totalDistanceTraveled > 0.1) {
         double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
         display.print(235.21 / lp100k, 1);
@@ -536,17 +557,17 @@ void loop() {
       }
 
       // Show Raw Sensor Data
-      display.setCursor(0, 58);
+      display.setCursor(0, 56);
       display.print("MAF: "); display.print(local_maf, 1);
       display.print(" g/s");
       break;
     }
     case 4: {
+      // Simulate Global variables for demo mode 4
       float_t local_rpm = 0.0;
       float_t local_fuelGauge = 0.0;
       float_t local_engineLoad = 0.0;
       
-      // Read & Retrive Data to Global Variables
       if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         local_rpm = global_rpm;
         local_fuelGauge = global_fuel;
@@ -557,22 +578,30 @@ void loop() {
       }
 
       display.setFont(NULL);
-      display.setTextSize(2);
 
       // Display RPM
-      display.setCursor(0, 10);
+      display.setTextSize(1);
+      display.setCursor(0, 0);
       display.print("RPM: ");
+      display.setTextSize(2);
+      display.setCursor(0, 13);
       display.println(local_rpm, 0);
 
       // Display Engine Load
-      display.setCursor(0, 28);
+      display.setTextSize(1);
+      display.setCursor(90, 0);
       display.print("LOAD: ");
+      display.setTextSize(2);
+      display.setCursor(90, 13);
       display.print(local_engineLoad, 0);
       display.println("%");
 
       // Display Fuel Level
-      display.setCursor(0, 43);
+      display.setTextSize(1);
+      display.setCursor(0, 56);
       display.print("FUEL: ");
+      display.setTextSize(2);
+      display.setCursor(38, 49);
       display.print(local_fuelGauge, 2);
       display.println("%");
       break;
