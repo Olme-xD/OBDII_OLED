@@ -332,10 +332,10 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("OBD-II Reader\n");
-  display.println("Dual Core (FreeRTOS)");
+  display.println("OBDII OLED (FreeRTOS)");
+  display.println("By Olme-xD\n");
   display.println("---------------------");
-  display.println("Connecting via MAC...");
+  display.print("Connecting via MAC...");
   display.display();
 
   // Connect to ELM327
@@ -346,7 +346,7 @@ void setup() {
     DEBUG_PORT.println("Connection Failed (MAC)");
     display.println("\nConnection Failed!");
     display.display();
-    delay(2000);
+    delay(500);
     ESP.restart();
   }
 
@@ -390,7 +390,7 @@ void loop() {
   static int lastButtonReading = LOW;
   static int currentButtonState = LOW;
   static uint32_t lastDebounceTime = 0;
-  const uint32_t tapTimeout = 2000;
+  const uint32_t tapTimeout = 1500;
 
   // Read Switch State
   int reading = digitalRead(SWITCH);
@@ -402,7 +402,7 @@ void loop() {
   lastButtonReading = reading; 
 
   // If reading is stable
-  if ((millis() - lastDebounceTime) > 50) {
+  if ((millis() - lastDebounceTime) > 30) {
     if (reading != currentButtonState) {
       currentButtonState = reading;
 
