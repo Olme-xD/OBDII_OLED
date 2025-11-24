@@ -416,7 +416,8 @@ void loop() {
         display.setTextSize(2);
         display.setTextColor(SSD1306_WHITE);
         display.setCursor(30, 25);
-        display.print("TAP: "); display.print(tapCounter);
+        display.print("TAP: ");
+        display.print(tapCounter);
         display.display();
       }
     }
@@ -431,6 +432,8 @@ void loop() {
     }
     tapCounter = 0; // Reset bucket
   }
+
+  if (tapCounter > 0) return; // If we are currently waiting for the timeout, SKIP the rest of the loop
   
   // Read & Retrive Data to Global Variables
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
