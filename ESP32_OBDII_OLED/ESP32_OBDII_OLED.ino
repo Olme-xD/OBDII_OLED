@@ -54,13 +54,15 @@ volatile float_t global_maf = -1.0;
 volatile float_t global_rpm = -1.0;
 volatile float_t global_load = -1.0;
 volatile float_t global_fuel = -1.0;
-#define FUEL_CORRECTION 1.08 // Calibration for Fuel Readings
 volatile double global_totalDistanceTraveled = 0.0;
 volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
 volatile int global_mode = 1;
 typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL, OBD_STATE_DTC} ObdState;
+
+// Calibration for Fuel Readings
+#define FUEL_CORRECTION 1.08
 
 void obdTask(void *pvParameters) {
   /* * Function: obdTask
@@ -327,6 +329,10 @@ void setup() {
     ESP.restart();
   }
 
+  // Set Initial Brightness
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(0xCF); // High Brightness
+
   // Show Startup Message
   display.clearDisplay();
   display.setTextSize(1);
@@ -390,7 +396,7 @@ void loop() {
   static int lastButtonReading = LOW;
   static int currentButtonState = LOW;
   static uint32_t lastDebounceTime = 0;
-  const uint32_t tapTimeout = 1500;
+  static uint8_t currentBrightness = 0xCF;
 
   // Read Switch State
   int reading = digitalRead(SWITCH);
@@ -408,7 +414,11 @@ void loop() {
 
       // Detect Press (Rising Edge)
       if (currentButtonState == HIGH) {
-        tapCounter++;
+        if (tapCounter >= 1 && tapCounter <= 7) {
+          tapCounter++;
+        } else {
+          tapCounter = 1;
+        }
         lastTapTime = millis();
 
         // Visual Feedback
@@ -416,20 +426,44 @@ void loop() {
         display.setTextSize(2);
         display.setTextColor(SSD1306_WHITE);
         display.setCursor(30, 25);
-        display.print("TAP: ");
+        display.print("MODE: ");
         display.print(tapCounter);
         display.display();
       }
     }
   }
   
-  if (tapCounter > 0 && (millis() - lastTapTime) > tapTimeout) {
-    // If valid mode (1-6)
-    if (tapCounter >= 1 && tapCounter <= 6) {
+  if (tapCounter > 0 && (millis() - lastTapTime) > 1000) {
+    // If valid mode (1-7)
+    if (tapCounter >= 1 && tapCounter <= 7) {
       local_mode = tapCounter;
     } else {
       local_mode = 1; // Default to Mode 1 if tapped too many times
     }
+
+    // Adjust Brightness for Mode 7
+    if (local_mode == 7) {
+      display.setCursor(0, 0);
+      display.setTextSize(2);
+      display.println("BRIGHTNESS: ");
+      display.setCursor(0, 35);
+
+      // Revert Brightness
+      display.ssd1306_command(SSD1306_SETCONTRAST);
+      if (currentBrightness == 0xCF) {
+        currentBrightness = 0x7F; // Medium-Low Brightness
+        display.ssd1306_command(currentBrightness);
+        display.print("HIGH");
+      } else {
+        currentBrightness = 0xCF; // High Brightness
+        display.ssd1306_command(currentBrightness);
+        display.print("MEDIUM LOW");
+      }
+      display.display();
+      delay(1500);
+      local_mode = 1; // Revert to Mode 1 after brightness change
+    }
+
     tapCounter = 0; // Reset bucket
   }
 
@@ -610,11 +644,13 @@ void loop() {
       break;
     }
     case 5: {
+      // Latch 0-30, 0-60, 0-80, 0-100 Timers
       static uint32_t startTime = 0;
       static bool isRunning = false;
       static float timer_30 = 0.0; 
       static float timer_60 = 0.0;
       static float timer_80 = 0.0;
+      static float timer_100 = 0.0;
       float current_mph = local_kph * 0.621371;
 
       // Reset State
@@ -623,6 +659,7 @@ void loop() {
         timer_30 = 0.0;
         timer_60 = 0.0;
         timer_80 = 0.0;
+        timer_100 = 0.0;
       }
 
       // Start Trigger
@@ -645,14 +682,16 @@ void loop() {
           timer_60 = currentDuration;
         }
 
-        // Latch 80 MPH (Final Stop)
+        // Latch 80 MPH
         if (current_mph >= 80.0 && timer_80 == 0.0) {
           timer_80 = currentDuration;
-          isRunning = false; // Stop the main timer
         }
 
-        // Resets Timer After 3 Minutes Regarless of Any State
-        if (currentDuration > 180.0) isRunning = false;
+        // Latch 100 MPH (Stops Timer)
+        if (current_mph >= 100.0 && timer_100 == 0.0) {
+          timer_100 = currentDuration;
+          isRunning = false; // Stop the main timer once 100 MPH is reached
+        }
       }
 
       // Speed
@@ -677,6 +716,12 @@ void loop() {
       display.setCursor(65, 40);
       display.print("80: ");
       if (timer_80 > 0) display.print(timer_80, 2);
+      else display.print(" --.-");
+
+      // 0-100 Line
+      display.setCursor(65, 55);
+      display.print("100:");
+      if (timer_100 > 0) display.print(timer_100, 2);
       else display.print(" --.-");
 
       // Status

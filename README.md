@@ -33,9 +33,9 @@ You must hardcode your ELM327's MAC address in the file.
 
 ## 🖥️ Interface & Modes
 
-The device features a **Multi-Tap Interface**. Tap the button `X` times quickly, then wait 1 second to switch modes.
+The device features a **Multi-Mode Interface**. Tap the button `X` times quickly, then wait 1 second to switch modes.
 
-| # Taps | Mode Description | Features |
+| # Mode | Mode Description | Features |
 | :--- | :--- | :--- |
 | **1** | **Efficiency** | Instant MPG (Big), Avg MPG, Connection Status |
 | **2** | **Trip Data** | Global Timer, Drive Timer, Total Distance |
@@ -47,4 +47,4 @@ The device features a **Multi-Tap Interface**. Tap the button `X` times quickly,
 ## 🧠 System Architecture
 
 * **Core 0 (OBD Task):** Handles Bluetooth serial via `ELMduino`. Implements a State Machine to poll PIDs (Speed -> MAF -> RPM) and performs physics integration (Distance = Speed * Time) protected by Mutex.
-* **Core 1 (Loop):** Handles OLED drawing, Multi-tap button logic, and overlays. Non-blocking design ensures gauges remain smooth during data retrieval.
+* **Core 1 (Loop):** Handles OLED drawing, Multi-mode button logic, and overlays. Non-blocking design ensures gauges remain smooth during data retrieval.
