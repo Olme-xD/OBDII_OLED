@@ -274,16 +274,29 @@ void obdTask(void *pvParameters) {
         }
         case OBD_STATE_DTC: {
           if (temp_kph == 0.0) {
-            String dtcResult = myELM327.getDDTC();
+            // Request DTCs (Service 03)
+            while (ELM_PORT.available()) ELM_PORT.read();
+            ELM_PORT.println("03");
+            ELM_PORT.setTimeout(2000);
+            String dtcResult = ELM_PORT.readStringUntil('>'); 
 
-            if(myELM327.nb_rx_state == ELM_SUCCESS) {
+            // Check if we got data
+            if (dtcResult.length() > 0) {
+              // Clean the response (remove "03" echo and whitespace)
+              dtcResult.replace("03", "");
+              dtcResult.replace("\r", " ");
+              dtcResult.replace("\n", "");
+              dtcResult.trim();
+
+              // Save to Global
               if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-                dtcResult.toCharArray((char*)global_dtcString, 256);
+                dtcResult.toCharArray((char*)global_dtcString, 256); 
                 global_lastDataUpdate = millis();
                 xSemaphoreGive(dataMutex);
               }
-            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-              myELM327.printError();
+            } else {
+              // Handle Error
+              DEBUG_PORT.println("DTC Timeout");
             }
           } else {
             DEBUG_PORT.println("Skipping DTC Polling while vehicle is moving.");
@@ -339,20 +352,20 @@ String timerTransform(uint32_t millisTime) {
   // Format Hours
   if (hours >= 1) {
     if (hours < 10) {
-        finalTimer += '0';
+      finalTimer += '0';
     }
     finalTimer += String(hours) + ":";
   }
 
   // Format Minutes
   if (minutes < 10) {
-      finalTimer += '0';
+    finalTimer += '0';
   }
   finalTimer += String(minutes) + ":";
 
   // Format Seconds
   if (seconds < 10) {
-      finalTimer += '0';
+    finalTimer += '0';
   }
   finalTimer += String(seconds);
 
@@ -464,9 +477,9 @@ void loop() {
 
       // Detect Press (Rising Edge)
       if (currentButtonState == HIGH) {
-        if (tapCounter >= 1 && tapCounter <= 7) {
-          tapCounter++;
-        } else {
+        // Increment Tap Counter
+        tapCounter++;
+        if (tapCounter > 7) {
           tapCounter = 1;
         }
         lastTapTime = millis();
@@ -475,7 +488,7 @@ void loop() {
         display.clearDisplay();
         display.setTextSize(2);
         display.setTextColor(SSD1306_WHITE);
-        display.setCursor(30, 25);
+        display.setCursor(22, 24);
         display.print("MODE: ");
         display.print(tapCounter);
         display.display();
@@ -493,24 +506,26 @@ void loop() {
 
     // Adjust Brightness for Mode 7
     if (local_mode == 7) {
-      display.setCursor(0, 0);
+      display.clearDisplay();
+      display.setCursor(4, 0);
       display.setTextSize(2);
-      display.println("BRIGHTNESS: ");
-      display.setCursor(0, 35);
+      display.println("BRIGHTNESS");
 
       // Revert Brightness
       display.ssd1306_command(SSD1306_SETCONTRAST);
       if (currentBrightness == 0xCF) {
-        currentBrightness = 0x7F; // Medium-Low Brightness
+        currentBrightness = 0x01; // Medium-Low Brightness
         display.ssd1306_command(currentBrightness);
-        display.print("HIGH");
+        display.setCursor(46, 25);
+        display.print("LOW");
       } else {
         currentBrightness = 0xCF; // High Brightness
         display.ssd1306_command(currentBrightness);
-        display.print("MEDIUM LOW");
+        display.setCursor(40, 25);
+        display.print("HIGH");
       }
       display.display();
-      delay(1000);
+      delay(2000);
       local_mode = 1; // Revert to Mode 1 after brightness change
     }
 
@@ -624,22 +639,28 @@ void loop() {
       break;
     }
     case 3: {
-      display.setFont(NULL);
-
       // Show Total Distance
-      display.setTextSize(2);
-      display.setCursor(0, 0);
+      display.setFont(&FreeSansBold14pt7b);
+      display.setCursor(0, 20);
       display.print(local_totalDistanceTraveled * 0.621371, 2); 
-      display.print(" mi");
+      display.setFont(NULL); 
+      display.setTextSize(1);
+      display.setCursor(display.getCursorX() + 3, 10);
+      display.println("mi");
 
       // Show Total Fuel
-      display.setCursor(0, 18);
+      display.setFont(&FreeSansBold14pt7b);
+      display.setCursor(0, 43);
       display.print(local_totalFuel * 0.264172, 3); 
-      display.print(" gal");
+      display.setFont(NULL);
+      display.setTextSize(1);
+      display.setCursor(display.getCursorX() + 3, 33);
+      display.println("gal");
 
       // Calculated MPG Average
+      display.setFont(NULL);
       display.setTextSize(1);
-      display.setCursor(0, 46);
+      display.setCursor(0, 47);
       display.print("MPG Avg: ");
       if (local_totalDistanceTraveled > 0.1) {
         double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
@@ -774,8 +795,8 @@ void loop() {
       else display.print(" --.-");
 
       // 0-100 Line
-      display.setCursor(65, 55);
-      display.print("100:");
+      display.setCursor(59, 55);
+      display.print("100: ");
       if (timer_100 > 0) display.print(timer_100, 2);
       else display.print(" --.-");
 
@@ -789,12 +810,12 @@ void loop() {
       static char local_dtcString[256];
       if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         strncpy(local_dtcString, (const char*)global_dtcString, 256);
-        local_dtc_string[256 - 1] = '\0'; // Ensure null termination
+        local_dtcString[256 - 1] = '\0'; // Ensure null termination
         xSemaphoreGive(dataMutex);
       }
       display.setCursor(0, 0);
       display.setTextSize(1);
-      display.println("DIAGNOSTIC TROUBLE CODES (DTC):");
+      display.println("DIAGNOSTIC TROUBLE\nCODES (DTC):");
       
       // Pointers to split the string result with space/newline
       char *token;
@@ -810,7 +831,8 @@ void loop() {
       }
 
       if (lineCount == 0) {
-        display.println("--- NO CODES STORED ---");
+        display.setCursor(19, 28);
+        display.print("NO CODES STORED");
       }
       break;
     }
