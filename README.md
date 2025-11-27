@@ -38,10 +38,10 @@ The device features a **Multi-Mode Interface**. Tap the button `X` times quickly
 | # Mode | Mode Description | Features |
 | :--- | :--- | :--- |
 | **1** | **Efficiency** | Instant MPG (Big), Avg MPG, Connection Status |
-| **2** | **Trip Data** | Global Timer, Drive Timer, Total Distance |
+| **2** | **Trip Data** | Global Timer, Drive Timer |
 | **3** | **Stats** | Total Distance, Total Fuel Used, Calculated Avg MPG, MAF (g/s) |
 | **4** | **Gauges** | RPM, Engine Load %, Fuel Level % |
-| **5** | **Drag Timer** | 0-30, 0-60, 0-80 MPH (Auto-reset on stop) |
+| **5** | **Drag Timer** | 0-30, 0-60, 0-80 0-100 MPH (Auto-reset on stop) |
 | **6** | **Diagnostics** | DTC Reader (Check Engine Codes) |
 
 ## 🧠 System Architecture
