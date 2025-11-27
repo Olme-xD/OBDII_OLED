@@ -58,6 +58,7 @@ volatile double global_totalDistanceTraveled = 0.0;
 volatile uint32_t global_totalDistanceTraveledTimer = 0.0;
 volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
+volatile char global_dtcString[256] = "";
 volatile int global_mode = 1;
 typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL, OBD_STATE_DTC} ObdState;
 
@@ -240,6 +241,23 @@ void obdTask(void *pvParameters) {
           break;
         }
         case OBD_STATE_DTC: {
+          if (temp_kph == 0.0) {
+            String dtcResult = myELM327.getDDTC();
+
+            if(myELM327.nb_rx_state == ELM_SUCCESS) {
+              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+                dtcResult.toCharArray((char*)global_dtcString, 256);
+                global_lastDataUpdate = millis();
+                xSemaphoreGive(dataMutex);
+              }
+            } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+              myELM327.printError();
+            }
+          } else {
+            DEBUG_PORT.println("Skipping DTC Polling while vehicle is moving.");
+          }
+
+          currentState = OBD_STATE_KPH;
           break;
         }
       }
@@ -389,7 +407,7 @@ void loop() {
   // Local Variables
   float_t local_kph, local_maf;
   double local_totalDistanceTraveled, local_totalFuel;
-  uint32_t local_lastUpdate, local_totalDistanceTraveledTimer;
+  uint32_t local_lastUpdate;
   static int local_mode = 1;
   static int tapCounter = 0;
   static uint32_t lastTapTime = 0;
@@ -460,7 +478,7 @@ void loop() {
         display.print("MEDIUM LOW");
       }
       display.display();
-      delay(1500);
+      delay(1000);
       local_mode = 1; // Revert to Mode 1 after brightness change
     }
 
@@ -474,7 +492,6 @@ void loop() {
     local_kph = global_vss_kph;
     local_maf = global_maf;
     local_totalDistanceTraveled = global_totalDistanceTraveled;
-    local_totalDistanceTraveledTimer = global_totalDistanceTraveledTimer;
     local_totalFuel = global_totalFuelConsumed;
     local_lastUpdate = global_lastDataUpdate;
     global_mode = local_mode;
@@ -542,9 +559,15 @@ void loop() {
       break;
     }
     case 2: {
-      display.setFont(NULL);
+      // Retrieve totalDistanceTraveledTimer
+      uint32_t local_totalDistanceTraveledTimer = 0;
+      if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        local_totalDistanceTraveledTimer = global_totalDistanceTraveledTimer;
+        xSemaphoreGive(dataMutex);
+      }
 
       // Display Global Time
+      display.setFont(NULL);
       display.setTextSize(1);
       display.setCursor(0, 0);
       display.print("Global Timer:");
@@ -730,10 +753,33 @@ void loop() {
       break;
     }
     case 6: {
-      // DTC CODE DISPLAY
+      // Retrieve DTC String
+      static char local_dtcString[256];
+      if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        strncpy(local_dtcString, (const char*)global_dtcString, 256);
+        local_dtc_string[256 - 1] = '\0'; // Ensure null termination
+        xSemaphoreGive(dataMutex);
+      }
       display.setCursor(0, 0);
-      display.setTextSize(2);
-      display.println("MODE 6");
+      display.setTextSize(1);
+      display.println("DIAGNOSTIC TROUBLE CODES (DTC):");
+      
+      // Pointers to split the string result with space/newline
+      char *token;
+      char *rest = local_dtcString;
+      int lineCount = 0;
+      
+      // Print DTCs on separate lines (max 5 lines)
+      while ((token = strtok_r(rest, " \n", &rest)) && lineCount < 5) {
+        if (strlen(token) > 0) {
+          display.println(token);
+          lineCount++;
+        }
+      }
+
+      if (lineCount == 0) {
+        display.println("--- NO CODES STORED ---");
+      }
       break;
     }
   }
