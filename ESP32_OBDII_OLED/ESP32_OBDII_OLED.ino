@@ -79,6 +79,7 @@ void obdTask(void *pvParameters) {
 
   static uint32_t lastSuccessfulMpgPollTime = 0;
   static ObdState currentState = OBD_STATE_KPH;
+  static ObdState previousState = OBD_STATE_FUEL;
   static float_t temp_kph = 0.0;
   static float_t prev_kph = 0.0;
   static float_t prev_maf = 0.0;
@@ -171,7 +172,15 @@ void obdTask(void *pvParameters) {
 
             // Selective Polling Logic
             if (local_mode == 4) {
-              currentState = OBD_STATE_RPM;
+              // Alternate between RPM, Fuel, and Load, prioratize MPG calculations
+              if (previousState == OBD_STATE_FUEL) {
+                currentState = OBD_STATE_RPM;
+              } else if (previousState == OBD_STATE_RPM) {
+                currentState = OBD_STATE_LOAD;
+              } else {
+                currentState = OBD_STATE_FUEL;
+              }
+              previousState = currentState;
             } else if (local_mode == 6) {
               currentState = OBD_STATE_DTC;
             } else {
@@ -195,10 +204,10 @@ void obdTask(void *pvParameters) {
               xSemaphoreGive(dataMutex);
             }
 
-            currentState = OBD_STATE_LOAD;
+            currentState = OBD_STATE_KPH;
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
-            currentState = OBD_STATE_LOAD;
+            currentState = OBD_STATE_KPH;
           }
           break;
         }
@@ -214,10 +223,10 @@ void obdTask(void *pvParameters) {
               xSemaphoreGive(dataMutex);
             }
 
-            currentState = OBD_STATE_FUEL;
+            currentState = OBD_STATE_KPH;
           } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
             myELM327.printError();
-            currentState = OBD_STATE_FUEL;
+            currentState = OBD_STATE_KPH;
           }
           break;
         }
@@ -225,10 +234,33 @@ void obdTask(void *pvParameters) {
           float_t value = myELM327.fuelLevel();
 
           if(myELM327.nb_rx_state == ELM_SUCCESS) {
+            // Moving Average Filter for Fuel Level
+            // Using double buffer to store last 10 readings for better CPU performance
+            static float local_fuelReadings[10];
+            static int local_fuelReadIndex = 0;
+            static int count = 0;
+            static float sum = 0.0;
+            float local_averageFuel = 0.0;
+
+            // If the buffer is NOT full yet (startup) just add to it
+            if (count < 10) {
+              local_fuelReadings[local_fuelReadIndex] = value;
+              sum += value;
+              count++;
+              local_averageFuel = sum / count;
+              local_fuelReadIndex = (local_fuelReadIndex + 1) % 10;
+            } else {
+              // If buffer is full, subtract oldest, add newest
+              sum -= local_fuelReadings[local_fuelReadIndex];
+              local_fuelReadings[local_fuelReadIndex] = value;
+              sum += value;
+              local_averageFuel = sum / 10.0;
+              local_fuelReadIndex = (local_fuelReadIndex + 1) % 10;
+            }
 
             // Update Global Fuel Level
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-              global_fuel = value;
+              global_fuel = local_averageFuel;
               global_lastDataUpdate = millis();
               xSemaphoreGive(dataMutex);
             }
@@ -540,7 +572,7 @@ void loop() {
       display.setFont(&FreeSansBold14pt7b);
       display.setCursor(98, 20);
       if (isAverageMpgValid) {
-        display.print(round(avg_mpg), 0);
+        display.print(floor(avg_mpg), 0);
       } else {
         display.print("--");
       }
