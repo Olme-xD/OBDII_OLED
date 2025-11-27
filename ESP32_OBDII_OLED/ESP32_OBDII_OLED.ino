@@ -24,6 +24,8 @@
 #include "BluetoothSerial.h"
 #include "FreeSansBold40pt7b.h"
 #include "FreeSansBold14pt7b.h"
+#include "FreeSansBold12pt7b.h"
+#include "FreeSansBold9pt7b.h"
 
 // OLED Screen Settings
 #define SCREEN_WIDTH 128
@@ -486,9 +488,9 @@ void loop() {
 
         // Visual Feedback
         display.clearDisplay();
-        display.setTextSize(2);
+        display.setFont(&FreeSansBold12pt7b);
         display.setTextColor(SSD1306_WHITE);
-        display.setCursor(22, 24);
+        display.setCursor(15, 40);
         display.print("MODE: ");
         display.print(tapCounter);
         display.display();
@@ -507,21 +509,23 @@ void loop() {
     // Adjust Brightness for Mode 7
     if (local_mode == 7) {
       display.clearDisplay();
-      display.setCursor(4, 0);
-      display.setTextSize(2);
+      display.setFont(&FreeSansBold9pt7b);
+      display.setTextSize(1);
+      display.setCursor(4, 15);
       display.println("BRIGHTNESS");
 
       // Revert Brightness
       display.ssd1306_command(SSD1306_SETCONTRAST);
+      display.setFont(&FreeSansBold12pt7b);
       if (currentBrightness == 0xCF) {
-        currentBrightness = 0x01; // Medium-Low Brightness
+        currentBrightness = 0x01; // Low Brightness
         display.ssd1306_command(currentBrightness);
-        display.setCursor(46, 25);
+        display.setCursor(40, 45);
         display.print("LOW");
       } else {
         currentBrightness = 0xCF; // High Brightness
         display.ssd1306_command(currentBrightness);
-        display.setCursor(40, 25);
+        display.setCursor(38, 45);
         display.print("HIGH");
       }
       display.display();
@@ -550,6 +554,7 @@ void loop() {
   // Clear Display
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+  display.setFont(NULL);
 
   // Mode Switching
   switch(local_mode) {
@@ -578,7 +583,7 @@ void loop() {
       if (isInstantMpgValid) {
         display.print(round(inst_mpg), 0);
       } else if (local_kph == 0 && local_maf > 0) {
-        display.print("00"); // If Speed is 0 but MAF is valid, we are idling. Show "0".
+        display.print("00"); // If Speed is 0 but MAF is valid we are idling
       } else {
         display.print("--");
       }
@@ -613,29 +618,24 @@ void loop() {
         xSemaphoreGive(dataMutex);
       }
 
-      // Display Global Time
+      // Display Global Time 
+      display.setTextColor(SSD1306_WHITE);
       display.setFont(NULL);
       display.setTextSize(1);
       display.setCursor(0, 0);
       display.print("Global Timer:");
-      display.setTextSize(2);
-      display.setCursor(0, 10);
+      display.setFont(&FreeSansBold14pt7b);
+      display.setCursor(0, 28);
       display.print(timerTransform(millis()));
       
-      // Display Time While Above 0 KPH
+      // Display Driving Time
+      display.setFont(NULL); 
       display.setTextSize(1);
-      display.setCursor(0, 28);
+      display.setCursor(0, 34); 
       display.print("Drive Timer:");
-      display.setTextSize(2);
-      display.setCursor(0, 38);
+      display.setFont(&FreeSansBold14pt7b);
+      display.setCursor(0, 62);
       display.print(timerTransform(local_totalDistanceTraveledTimer));
-
-      // Display Distance Traveled
-      display.setTextSize(1);
-      display.setCursor(0, 56);
-      display.print("Dist Trav:");
-      display.print((local_totalDistanceTraveled * 0.621371), 1);
-      display.print(" mi");
       break;
     }
     case 3: {
@@ -661,7 +661,7 @@ void loop() {
       display.setFont(NULL);
       display.setTextSize(1);
       display.setCursor(0, 47);
-      display.print("MPG Avg: ");
+      display.print("Avg: ");
       if (local_totalDistanceTraveled > 0.1) {
         double lp100k = (local_totalFuel / local_totalDistanceTraveled) * 100.0;
         display.print(235.21 / lp100k, 1);
@@ -676,7 +676,7 @@ void loop() {
       break;
     }
     case 4: {
-      // Simulate Global variables for demo mode 4
+      // Local Variables
       float_t local_rpm = 0.0;
       float_t local_fuelGauge = 0.0;
       float_t local_engineLoad = 0.0;
@@ -690,33 +690,35 @@ void loop() {
         return;
       }
 
-      display.setFont(NULL);
-
       // Display RPM
+      display.setTextColor(SSD1306_WHITE);
+      display.setFont(NULL);
       display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.print("RPM: ");
-      display.setTextSize(2);
-      display.setCursor(0, 13);
-      display.println(local_rpm, 0);
+      display.setCursor(0, 5);
+      display.print("RPM:");
+      display.setFont(&FreeSansBold12pt7b);
+      display.setCursor(45, 15);
+      display.print((int)local_rpm);
 
       // Display Engine Load
+      display.setFont(NULL);
       display.setTextSize(1);
-      display.setCursor(90, 0);
-      display.print("LOAD: ");
-      display.setTextSize(2);
-      display.setCursor(90, 13);
-      display.print(local_engineLoad, 0);
-      display.println("%");
+      display.setCursor(0, 28);
+      display.print("LOAD:");
+      display.setFont(&FreeSansBold12pt7b);
+      display.setCursor(45, 38);
+      display.print((int)local_engineLoad);
+      display.print("%");
 
       // Display Fuel Level
+      display.setFont(NULL);
       display.setTextSize(1);
-      display.setCursor(0, 56);
-      display.print("FUEL: ");
-      display.setTextSize(2);
-      display.setCursor(38, 49);
-      display.print(local_fuelGauge, 2);
-      display.println("%");
+      display.setCursor(0, 51);
+      display.print("FUEL:");
+      display.setFont(&FreeSansBold12pt7b);
+      display.setCursor(45, 61);
+      display.print((int)local_fuelGauge);
+      display.print("%");
       break;
     }
     case 5: {
@@ -771,10 +773,12 @@ void loop() {
       }
 
       // Speed
-      display.setTextSize(3);
-      display.setCursor(0, 25);
+      display.setFont(&FreeSansBold14pt7b);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, 45);
       display.print((int)current_mph);
       display.setTextSize(1);
+      display.setFont(NULL);
       
       // 0-30 Line
       display.setCursor(65, 10);
