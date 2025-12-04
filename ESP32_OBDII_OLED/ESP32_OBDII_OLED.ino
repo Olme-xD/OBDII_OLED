@@ -468,6 +468,7 @@ void loop() {
   static int currentButtonState = LOW;
   static uint32_t lastDebounceTime = 0;
   static uint8_t currentBrightness = 0xCF;
+  static bool variableReset = false;
 
   // Read Switch State
   int reading = digitalRead(SWITCH);
@@ -510,6 +511,16 @@ void loop() {
       local_mode = tapCounter;
     } else {
       local_mode = 1; // Default to Mode 1 if tapped too many times
+    }
+    
+    // Reset Global Distance & Fuel if out of Mode 5
+    if (local_mode != 5 && variableReset) {
+      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        global_totalDistanceTraveled = 0.0;
+        global_totalFuelConsumed = 0.0;
+        xSemaphoreGive(dataMutex);
+      }
+      variableReset = false;
     }
 
     // Adjust Brightness for Mode 7
@@ -731,7 +742,7 @@ void loop() {
       // Latch 0-30, 0-60, 0-80, 0-100 Timers
       static uint32_t startTime = 0;
       static bool isRunning = false;
-      static float timer_30 = 0.0; 
+      static float timer_30 = 0.0;
       static float timer_60 = 0.0;
       static float timer_80 = 0.0;
       static float timer_100 = 0.0;
@@ -739,6 +750,7 @@ void loop() {
 
       // Reset State
       if (local_kph == 0) {
+        variableReset = true;
         isRunning = false;
         timer_30 = 0.0;
         timer_60 = 0.0;
