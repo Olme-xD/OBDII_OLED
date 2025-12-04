@@ -96,6 +96,12 @@ void obdTask(void *pvParameters) {
           uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
+            // Sanity Check
+            if (value > 255 || value < 0) {
+              DEBUG_PORT.printf("Bad Speed Data Packet Ignored: %f\n", value);
+              break;
+            }
+
             temp_kph = value;
             double dist_delta = 0.0;
             uint32_t time_delta_ms = 0;
