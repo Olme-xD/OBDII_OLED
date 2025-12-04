@@ -97,7 +97,7 @@ void obdTask(void *pvParameters) {
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
             // Sanity Check
-            if (value > 255 || value < 0) {
+            if (value < 0 || value > 255) {
               DEBUG_PORT.printf("Bad Speed Data Packet Ignored: %f\n", value);
               break;
             }
@@ -149,6 +149,12 @@ void obdTask(void *pvParameters) {
           uint32_t now = millis();
 
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
+            // Sanity Check
+            if (value < 0.0 || value > 200.0) {
+              DEBUG_PORT.printf("Bad MAF Data Packet Ignored: %f\n", value);
+              break;
+            }
+
             float_t temp_maf = value;
             double fuel_delta = 0.0;
             int local_mode = 1;
