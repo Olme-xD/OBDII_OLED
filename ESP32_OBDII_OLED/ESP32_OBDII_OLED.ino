@@ -62,10 +62,11 @@ volatile double global_totalFuelConsumed = 0.0;
 volatile uint32_t global_lastDataUpdate = 0;
 volatile char global_dtcString[256] = "";
 volatile int global_mode = 1;
+volatile bool global_mode5Checkpoint = false;
 typedef enum {OBD_STATE_KPH, OBD_STATE_MAF, OBD_STATE_RPM, OBD_STATE_LOAD, OBD_STATE_FUEL, OBD_STATE_DTC} ObdState;
 
 // Calibration for Fuel Readings
-#define FUEL_CORRECTION 1.08
+#define FUEL_CORRECTION 1.10
 
 void obdTask(void *pvParameters) {
   /* * Function: obdTask
@@ -98,7 +99,7 @@ void obdTask(void *pvParameters) {
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
             // Sanity Check
             if (value < 0 || value > 255) {
-              DEBUG_PORT.printf("Bad Speed Data Packet Ignored: %f\n", value);
+              DEBUG_PORT.printf("Bad Speed Data Packet Ignored!\nDATA: %f\n", value);
               break;
             }
 
@@ -133,8 +134,8 @@ void obdTask(void *pvParameters) {
               xSemaphoreGive(dataMutex);
             }
 
-            // Selective Polling Logic
-            if (local_mode == 5) {
+            // Selective Polling Logic; For mode5 to run the 
+            if (local_mode == 5 && global_mode5Checkpoint) {
               currentState = OBD_STATE_KPH;
             } else {
               currentState = OBD_STATE_MAF;
@@ -151,7 +152,7 @@ void obdTask(void *pvParameters) {
           if (myELM327.nb_rx_state == ELM_SUCCESS) {
             // Sanity Check
             if (value < 0.0 || value > 200.0) {
-              DEBUG_PORT.printf("Bad MAF Data Packet Ignored: %f\n", value);
+              DEBUG_PORT.printf("Bad MAF Data Packet Ignored!\nDATA: %f\n", value);
               break;
             }
 
@@ -475,6 +476,7 @@ void loop() {
   static uint32_t lastDebounceTime = 0;
   static uint8_t currentBrightness = 0xCF;
   static bool variableReset = false;
+  static bool local_dragTimerRunning = false;
 
   // Read Switch State
   int reading = digitalRead(SWITCH);
@@ -569,6 +571,7 @@ void loop() {
     local_totalFuel = global_totalFuelConsumed;
     local_lastUpdate = global_lastDataUpdate;
     global_mode = local_mode;
+    global_mode5Checkpoint = local_dragTimerRunning;
     xSemaphoreGive(dataMutex);
   } else {
     return;
@@ -768,6 +771,7 @@ void loop() {
       if (current_mph > 0.5 && !isRunning && timer_80 == 0.0) {
         startTime = millis();
         isRunning = true;
+        local_dragTimerRunning = true;
       }
 
       // Running & Latching Logic
@@ -793,6 +797,7 @@ void loop() {
         if (current_mph >= 100.0 && timer_100 == 0.0) {
           timer_100 = currentDuration;
           isRunning = false; // Stop the main timer once 100 MPH is reached
+          local_dragTimerRunning = false; // This flag indicates timer completion for global variable
         }
       }
 
