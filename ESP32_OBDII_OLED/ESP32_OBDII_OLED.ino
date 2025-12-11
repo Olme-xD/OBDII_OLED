@@ -759,7 +759,6 @@ void loop() {
 
       // Reset State
       if (local_kph == 0) {
-        variableReset = true;
         isRunning = false;
         timer_30 = 0.0;
         timer_60 = 0.0;
@@ -768,9 +767,10 @@ void loop() {
       }
 
       // Start Trigger
-      if (current_mph > 0.5 && !isRunning && timer_80 == 0.0) {
+      if (current_mph > 0.5 && !isRunning && timer_100 == 0.0) {
         startTime = millis();
         isRunning = true;
+        variableReset = true;
         local_dragTimerRunning = true;
       }
 
