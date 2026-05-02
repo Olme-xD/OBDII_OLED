@@ -289,34 +289,49 @@ void obdTask(void *pvParameters) {
         }
         case OBD_STATE_DTC: {
           if (temp_kph == 0.0) {
-            // Request DTCs (Service 03)
             while (ELM_PORT.available()) ELM_PORT.read();
             ELM_PORT.println("03");
             ELM_PORT.setTimeout(2000);
-            String dtcResult = ELM_PORT.readStringUntil('>'); 
+            String raw = ELM_PORT.readStringUntil('>');
+            raw.replace("\r", " ");
+            raw.replace("\n", "");
+            raw.trim();
 
-            // Check if we got data
-            if (dtcResult.length() > 0) {
-              // Clean the response (remove "03" echo and whitespace)
-              dtcResult.replace("03", "");
-              dtcResult.replace("\r", " ");
-              dtcResult.replace("\n", "");
-              dtcResult.trim();
+            // Tokenize the response – raw should look like "43 02 01 33 00 00"
+            char *token = strtok((char*)raw.c_str(), " ");
+            int dtcCount = 0;
+            String readableCodes = "";
 
-              // Save to Global
-              if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-                dtcResult.toCharArray((char*)global_dtcString, 256); 
-                global_lastDataUpdate = millis();
-                xSemaphoreGive(dataMutex);
-              }
-            } else {
-              // Handle Error
-              DEBUG_PORT.println("DTC Timeout");
+            // Skip first token (response ID, e.g. "43")
+            token = strtok(NULL, " ");
+            // Skip second token (DTC count)
+            token = strtok(NULL, " ");
+
+            // Remaining tokens come in pairs = DTC bytes
+            while (token != NULL && dtcCount < 5) {
+              int byte1 = strtol(token, NULL, 16);
+              char *token2 = strtok(NULL, " ");
+              if (token2 == NULL) break;
+              int byte2 = strtol(token2, NULL, 16);
+
+              // Decode powertrain DTC (service $03 always gives P codes)
+              int middle = byte1 & 0x3F;
+              int last   = byte2 & 0x7F;   // 0-99
+              if (last > 99) last = 99;    // safety clamp
+              char dtcStr[8];
+              sprintf(dtcStr, "P%02d%02d", middle, last);
+              readableCodes += String(dtcStr) + " ";
+              dtcCount++;
+
+              token = strtok(NULL, " ");   // next first byte
             }
-          } else {
-            DEBUG_PORT.println("Skipping DTC Polling while vehicle is moving.");
-          }
 
+            if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+              readableCodes.toCharArray((char*)global_dtcString, 256);
+              global_lastDataUpdate = millis();
+              xSemaphoreGive(dataMutex);
+            }
+          }
           currentState = OBD_STATE_KPH;
           break;
         }
@@ -519,16 +534,6 @@ void loop() {
       local_mode = tapCounter;
     } else {
       local_mode = 1; // Default to Mode 1 if tapped too many times
-    }
-    
-    // Reset Global Distance & Fuel if out of Mode 5
-    if (local_mode != 5 && variableReset) {
-      if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        global_totalDistanceTraveled = 0.0;
-        global_totalFuelConsumed = 0.0;
-        xSemaphoreGive(dataMutex);
-      }
-      variableReset = false;
     }
 
     // Adjust Brightness for Mode 7
@@ -772,7 +777,14 @@ void loop() {
         isRunning = true;
         variableReset = true;
         local_dragTimerRunning = true;
-      }
+
+        // Reset MPG accumulators only when a new run begins from zero
+        if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+            global_totalDistanceTraveled = 0.0;
+            global_totalFuelConsumed = 0.0;
+            xSemaphoreGive(dataMutex);
+        }
+      } 
 
       // Running & Latching Logic
       if (isRunning) {
