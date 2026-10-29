@@ -26,18 +26,18 @@ A high-performance, Dual-Core OBD-II reader for ESP32. This project utilizes Fre
 Adjust the fuel calculation scalar in the code to match your vehicle's actual consumption vs. sensor data.
 
 * **Location:** Top of `ESP32_OBDII_OLED.ino`
-* **Current Setting:** `1.08` (+8%)
+* **Current Setting:** `1.10` (+10%)
 
 ### Bluetooth MAC Address
 You must hardcode your ELM327's MAC address in the file.
 
 ## 🖥️ Interface & Modes
 
-The device features a **Multi-Mode Interface**. Tap the button `X` times quickly, then wait 1 second to switch modes.
+The device features a **Multi-Mode Interface**. Tap the button `X` times quickly, then wait 1 second to switch modes. Long press to switch between brigtness levels.
 
 | # Mode | Mode Description | Features |
 | :--- | :--- | :--- |
-| **1** | **Efficiency** | Instant MPG (Big), Avg MPG, Connection Status |
+| **1** | **Efficiency** | Instant MPG, Avg MPG, Connection Status |
 | **2** | **Trip Data** | Global Timer, Drive Timer |
 | **3** | **Stats** | Total Distance, Total Fuel Used, Calculated Avg MPG, MAF (g/s) |
 | **4** | **Gauges** | RPM, Engine Load %, Fuel Level % |

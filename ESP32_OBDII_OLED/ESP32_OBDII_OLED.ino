@@ -289,45 +289,101 @@ void obdTask(void *pvParameters) {
         }
         case OBD_STATE_DTC: {
           if (temp_kph == 0.0) {
+            // Flush any pending bytes so the ELM327 is in a clean state
             while (ELM_PORT.available()) ELM_PORT.read();
+
+            // Request stored DTCs (Service 03)
             ELM_PORT.println("03");
             ELM_PORT.setTimeout(2000);
             String raw = ELM_PORT.readStringUntil('>');
-            raw.replace("\r", " ");
-            raw.replace("\n", "");
-            raw.trim();
 
-            // Tokenize the response – raw should look like "43 02 01 33 00 00"
-            char *token = strtok((char*)raw.c_str(), " ");
-            int dtcCount = 0;
+            // Normalise whitespace so tokens are space-separated
+            raw.replace("\r", " ");
+            raw.replace("\n", " ");
+            raw.trim();
             String readableCodes = "";
 
-            // Skip first token (response ID, e.g. "43")
-            token = strtok(NULL, " ");
-            // Skip second token (DTC count)
-            token = strtok(NULL, " ");
+            if (raw.length() > 0) {
+              char buffer[256];
+              raw.toCharArray(buffer, sizeof(buffer));
 
-            // Remaining tokens come in pairs = DTC bytes
-            while (token != NULL && dtcCount < 5) {
-              int byte1 = strtol(token, NULL, 16);
-              char *token2 = strtok(NULL, " ");
-              if (token2 == NULL) break;
-              int byte2 = strtol(token2, NULL, 16);
+              char *saveptr = NULL;
+              char *token = strtok_r(buffer, " ", &saveptr);
 
-              // Decode powertrain DTC (service $03 always gives P codes)
-              int middle = byte1 & 0x3F;
-              int last   = byte2 & 0x7F;   // 0-99
-              if (last > 99) last = 99;    // safety clamp
-              char dtcStr[8];
-              sprintf(dtcStr, "P%02d%02d", middle, last);
-              readableCodes += String(dtcStr) + " ";
-              dtcCount++;
+              // State machine for parsing hex tokens
+              bool lookingForHeader = true; // waiting for 0x43 (positive response to svc 03)
+              int  dtcRemaining     = 0;    // -1 means "next token is DTC count"
+              int  pendingByte1     = -1;   // first byte of a DTC pair
 
-              token = strtok(NULL, " ");   // next first byte
+              while (token != NULL) {
+                int val = (int)strtol(token, NULL, 16);
+
+                if (lookingForHeader) {
+                  // Response header is always 0x43 for service 03
+                  if (val == 0x43) {
+                    lookingForHeader = false;
+                    dtcRemaining = -1;
+                  }
+                } else if (dtcRemaining < 0) {
+                  // Count byte = number of DTCs in this response
+                  dtcRemaining = val;
+                  if (dtcRemaining == 0) {
+                    lookingForHeader = true;
+                  }
+                } else if (pendingByte1 < 0 && dtcRemaining > 0) {
+                  // First byte of a DTC pair
+                  pendingByte1 = val;
+                } else if (pendingByte1 >= 0) {
+                  // Second byte of a DTC pair -> decode
+                  // 00 00 padding (common with fixed-length responses) is skipped
+                  if (!(pendingByte1 == 0 && val == 0)) {
+                    char letter = 'P';
+                    switch ((pendingByte1 >> 6) & 0x03) {
+                      case 1: letter = 'C'; break;
+                      case 2: letter = 'B'; break;
+                      case 3: letter = 'U'; break;
+                    }
+                    // SAE J1979 layout:
+                    //   byte1[7:6] = system letter
+                    //   byte1[5:4] = first digit (0-3)
+                    //   byte1[3:0] = second digit (0-F)
+                    //   byte2[7:4] = third digit  (0-F)
+                    //   byte2[3:0] = fourth digit (0-F)
+                    int d1 = (pendingByte1 >> 4) & 0x03;
+                    int d2 =  pendingByte1       & 0x0F;
+                    int d3 = (val        >> 4) & 0x0F;
+                    int d4 =  val               & 0x0F;
+
+                    char dtcStr[8];
+                    snprintf(dtcStr, sizeof(dtcStr), "%c%X%X%X%X",
+                             letter, d1, d2, d3, d4);
+                    if (readableCodes.length() > 0) readableCodes += " ";
+                    readableCodes += dtcStr;
+                  }
+                  pendingByte1 = -1;
+                  dtcRemaining--;
+                  if (dtcRemaining <= 0) {
+                    lookingForHeader = true;
+                  }
+                }
+
+                token = strtok_r(NULL, " ", &saveptr);
+              }
             }
 
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
               readableCodes.toCharArray((char*)global_dtcString, 256);
+              global_lastDataUpdate = millis();
+              xSemaphoreGive(dataMutex);
+            }
+          } else {
+            // Vehicle is moving — reading DTCs while driving is not safe.
+            // Push a prompt into global_dtcString so Mode 6 renders it.
+            if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+              const char* stopMsg = "STOP VEHICLE\nTO READ DTCS";
+              char* dest = (char*)global_dtcString;
+              strncpy(dest, stopMsg, 255);
+              dest[255] = '\0';
               global_lastDataUpdate = millis();
               xSemaphoreGive(dataMutex);
             }
@@ -489,6 +545,8 @@ void loop() {
   static int lastButtonReading = LOW;
   static int currentButtonState = LOW;
   static uint32_t lastDebounceTime = 0;
+  static bool longPressHandled = false;
+  static uint32_t buttonPressStartTime = 0;
   static uint8_t currentBrightness = 0xCF;
   static bool variableReset = false;
   static bool local_dragTimerRunning = false;
@@ -496,71 +554,70 @@ void loop() {
   // Read Switch State
   int reading = digitalRead(SWITCH);
 
-  // If the switch changed, reset the debounce timer
+  // Debounce
   if (reading != lastButtonReading) {
     lastDebounceTime = millis();
   }
-  lastButtonReading = reading; 
+  lastButtonReading = reading;
 
-  // If reading is stable
   if ((millis() - lastDebounceTime) > 30) {
     if (reading != currentButtonState) {
-      currentButtonState = reading;
+      if (reading == LOW) {
+        // Press edge -> start long-press timer
+        buttonPressStartTime = millis();
+        longPressHandled = false;
+      } else {
+        // Release edge -> count as tap ONLY if not a long-press
+        if (!longPressHandled) {
+          tapCounter++;
+          if (tapCounter > 6) tapCounter = 1; // modes 1..6 only
+          lastTapTime = millis();
 
-      // Detect Press (Rising Edge)
-      if (currentButtonState == HIGH) {
-        // Increment Tap Counter
-        tapCounter++;
-        if (tapCounter > 7) {
-          tapCounter = 1;
+          // Visual feedback for mode selection
+          display.clearDisplay();
+          display.setFont(&FreeSansBold12pt7b);
+          display.setTextColor(SSD1306_WHITE);
+          display.setCursor(15, 40);
+          display.print("MODE: ");
+          display.print(tapCounter);
+          display.display();
         }
-        lastTapTime = millis();
-
-        // Visual Feedback
-        display.clearDisplay();
-        display.setFont(&FreeSansBold12pt7b);
-        display.setTextColor(SSD1306_WHITE);
-        display.setCursor(15, 40);
-        display.print("MODE: ");
-        display.print(tapCounter);
-        display.display();
+        longPressHandled = false;
       }
+      currentButtonState = reading;
     }
   }
-  
-  if (tapCounter > 0 && (millis() - lastTapTime) > 1000) {
-    // If valid mode (1-7)
-    if (tapCounter >= 1 && tapCounter <= 7) {
-      local_mode = tapCounter;
-    } else {
-      local_mode = 1; // Default to Mode 1 if tapped too many times
-    }
 
-    // Adjust Brightness for Mode 7
-    if (local_mode == 7) {
+  // Long-press detection: held for >= 1s toggles OLED brightness
+  if (currentButtonState == LOW && !longPressHandled && buttonPressStartTime > 0) {
+    if ((millis() - buttonPressStartTime) >= 1000) {
+      longPressHandled = true;
+      tapCounter       = 0;   // cancel any pending mode switch
+
+      currentBrightness = (currentBrightness == 0xCF) ? 0x01 : 0xCF;
+      display.ssd1306_command(SSD1306_SETCONTRAST);
+      display.ssd1306_command(currentBrightness);
+
+      // Feedback for brightness change
       display.clearDisplay();
       display.setFont(&FreeSansBold9pt7b);
       display.setTextSize(1);
       display.setCursor(4, 15);
       display.println("BRIGHTNESS");
-
-      // Revert Brightness
-      display.ssd1306_command(SSD1306_SETCONTRAST);
       display.setFont(&FreeSansBold12pt7b);
-      if (currentBrightness == 0xCF) {
-        currentBrightness = 0x01; // Low Brightness
-        display.ssd1306_command(currentBrightness);
-        display.setCursor(40, 45);
-        display.print("LOW");
-      } else {
-        currentBrightness = 0xCF; // High Brightness
-        display.ssd1306_command(currentBrightness);
-        display.setCursor(38, 45);
-        display.print("HIGH");
-      }
+      display.setCursor(38, 45);
+      display.print(currentBrightness == 0xCF ? "HIGH" : "LOW");
       display.display();
-      delay(2000);
-      local_mode = 1; // Revert to Mode 1 after brightness change
+      delay(1000);
+    }
+  }
+  
+  // Commit the mode after 1s of no additional taps
+  if (tapCounter > 0 && (millis() - lastTapTime) > 1000) {
+    if (tapCounter >= 1 && tapCounter <= 6) {
+      local_mode = tapCounter;
+    } else {
+      local_mode = 1;
     }
 
     tapCounter = 0; // Reset bucket
@@ -637,7 +694,7 @@ void loop() {
       } else if(!ELM_PORT.connected()) {
         display.print("x");
       } else {
-        display.print("!");
+        display.print(".");
       }
       break;
     }
